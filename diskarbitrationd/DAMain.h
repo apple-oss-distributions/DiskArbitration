@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -37,6 +35,7 @@ extern "C" {
 extern const char *           kDAMainMountPointFolder;
 extern const char *           kDAMainMountPointFolderCookieFile;
 
+extern CFURLRef               gDABundlePath;
 extern CFStringRef            gDAConsoleUser;
 extern gid_t                  gDAConsoleUserGID;
 extern uid_t                  gDAConsoleUserUID;
@@ -46,6 +45,7 @@ extern CFMutableArrayRef      gDAFileSystemProbeList;
 extern Boolean                gDAIdle;
 extern io_iterator_t          gDAMediaAppearedNotification;
 extern io_iterator_t          gDAMediaDisappearedNotification;
+extern IONotificationPortRef  gDAMediaPort;
 extern CFMutableArrayRef      gDAMountMapList1;
 extern CFMutableArrayRef      gDAMountMapList2;
 extern CFMutableDictionaryRef gDAPreferenceList;
@@ -56,8 +56,6 @@ extern CFMutableArrayRef      gDARequestList;
 extern CFMutableArrayRef      gDAResponseList;
 extern CFMutableArrayRef      gDASessionList;
 extern CFMutableDictionaryRef gDAUnitList;
-
-extern void DAMainRendezvous( void );
 
 #ifdef __cplusplus
 }

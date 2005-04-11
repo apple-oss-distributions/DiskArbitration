@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -150,7 +148,7 @@ static void __DACommandExecute( char * const *           argv,
         execv( argv[0], argv );
 
         _exit( EX_OSERR );
-	}
+    }
 
     if ( executablePID != -1 )
     {
@@ -320,6 +318,7 @@ static void __DACommandSignal( int sig )
      */
 
     mach_msg_header_t message;
+    kern_return_t     status;
 
     message.msgh_bits        = MACH_MSGH_BITS( MACH_MSG_TYPE_COPY_SEND, 0 );
     message.msgh_id          = 0;
@@ -328,7 +327,12 @@ static void __DACommandSignal( int sig )
     message.msgh_reserved    = 0;
     message.msgh_size        = sizeof( message );
 
-    mach_msg( &message, MACH_SEND_MSG | MACH_SEND_TIMEOUT, message.msgh_size, 0, MACH_PORT_NULL, 0, MACH_PORT_NULL );
+    status = mach_msg( &message, MACH_SEND_MSG | MACH_SEND_TIMEOUT, message.msgh_size, 0, MACH_PORT_NULL, 0, MACH_PORT_NULL );
+
+    if ( status == MACH_SEND_TIMED_OUT )
+    {
+        mach_msg_destroy( &message );
+    }
 }
 
 CFRunLoopSourceRef DACommandCreateRunLoopSource( CFAllocatorRef allocator, CFIndex order )

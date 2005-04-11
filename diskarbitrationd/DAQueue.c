@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -82,6 +80,13 @@ static void __DAQueueRequest( _DARequestKind kind, DADiskRef argument0, CFIndex 
 {
     DARequestRef request;
 
+///w:start
+    if ( kind == _kDADiskMount )
+    {
+        request = DARequestCreate( kCFAllocatorDefault, kind, argument0, argument1, argument2, argument3, ___UID_UNKNOWN, ___GID_UNKNOWN, callback );
+    }
+    else
+///w:stop
     request = DARequestCreate( kCFAllocatorDefault, kind, argument0, argument1, argument2, argument3, ___UID_ROOT, ___GID_ADMIN, callback );
 
     if ( request )

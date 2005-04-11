@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -180,31 +178,6 @@ void _DAMountCreateTrashFolder( DADiskRef disk, CFURLRef mountpoint )
                     ___chattr( path, ___ATTR_INVISIBLE, 0 );
                 }
             }
-            else
-            {
-                /*
-                 * Correct the trash folder's mode.
-                 */
-
-                if ( ( status.st_mode & 01333 ) != 01333 )
-                {
-                     chmod( path, 01333 );
-                }
-
-                /*
-                 * Correct the trash folder's ownership.
-                 */
-
-                if ( status.st_uid != ___UID_ROOT )
-                {
-                    chown( path, ___UID_ROOT, -1 );
-                }
-
-                if ( status.st_gid != ___GID_ADMIN )
-                {
-                    chown( path, -1, ___GID_ADMIN );
-                }
-            }
         }
     }
 }
@@ -270,14 +243,21 @@ CFURLRef DAMountCreateMountPointWithAction( DADiskRef disk, DAMountPointAction a
 
     string = DADiskGetDescription( disk, kDADiskDescriptionVolumeNameKey );
 
-    if ( string == NULL )
+    if ( string )
     {
-        string = CFSTR( "Untitled" );
+        if ( CFStringGetLength( string ) )
+        {
+            CFRetain( string );
+        }
+        else
+        {
+            string = NULL;
+        }
     }
 
-    if ( CFStringGetLength( string ) == 0 )
+    if ( string == NULL )
     {
-        string = CFSTR( "Untitled" );
+        string = ___CFBundleCopyLocalizedStringInDirectory( gDABundlePath, CFSTR( "Untitled" ), CFSTR( "Untitled" ), NULL );
     }
 
     if ( ___CFStringGetCString( string, name, MNAMELEN - 20 ) )
@@ -402,11 +382,16 @@ CFURLRef DAMountCreateMountPointWithAction( DADiskRef disk, DAMountPointAction a
                         }
                     }
 
-                    break;
+                    if ( mountpoint )
+                    {
+                        break;
+                    }
                 }
             }
         }
     }
+
+    CFRelease( string );
 
     return mountpoint;
 }
@@ -510,22 +495,33 @@ void DAMountRemoveMountPoint( CFURLRef mountpoint )
 
     if ( CFURLGetFileSystemRepresentation( mountpoint, TRUE, path, sizeof( path ) ) )
     {
-        struct stat status;
-
-        /*
-         * Determine whether the mount point cookie file exists.
-         */
-
-        strcat( path, "/" );
-        strcat( path, kDAMainMountPointFolderCookieFile );
-
-        if ( stat( path, &status ) == 0 )
+        if ( ___isautofs( path ) == 0 )
         {
+            struct stat status;
+
             /*
-             * Remove the mount point cookie file.
+             * Determine whether the mount point cookie file exists.
              */
 
-            if ( unlink( path ) == 0 )
+            strcat( path, "/" );
+            strcat( path, kDAMainMountPointFolderCookieFile );
+
+            if ( stat( path, &status ) == 0 )
+            {
+                /*
+                 * Remove the mount point cookie file.
+                 */
+
+                if ( unlink( path ) == 0 )
+                {
+                    /*
+                     * Remove the mount point.
+                     */
+
+                    rmdir( dirname( path ) );
+                }
+            }
+            else if ( strncmp( path, kDAMainMountPointFolder, sizeof( kDAMainMountPointFolder ) ) == 0 )
             {
                 /*
                  * Remove the mount point.
@@ -533,14 +529,6 @@ void DAMountRemoveMountPoint( CFURLRef mountpoint )
 
                 rmdir( dirname( path ) );
             }
-        }
-        else if ( strncmp( path, kDAMainMountPointFolder, sizeof( kDAMainMountPointFolder ) ) == 0 )
-        {
-            /*
-             * Remove the mount point.
-             */
-
-            rmdir( dirname( path ) );
         }
     }
 }
@@ -553,16 +541,16 @@ void DAMountWithArguments( DADiskRef disk, CFURLRef mountpoint, DAMountCallback 
      * terminated.
      */
 
-    CFStringRef                argument     = NULL;
-    va_list                    arguments    = { 0 };
-    Boolean                    automatic    = FALSE;
-    __DAMountCallbackContext * context      = NULL;
-    CFIndex                    count        = 0;
-    DAFileSystemRef            filesystem   = DADiskGetFileSystem( disk );
-    CFIndex                    index        = 0;
-    CFDictionaryRef            map          = NULL;
-    CFMutableStringRef         options      = NULL;
-    int                        status       = 0;
+    CFStringRef                argument   = NULL;
+    va_list                    arguments  = { 0 };
+    CFBooleanRef               automatic  = kCFBooleanTrue;
+    __DAMountCallbackContext * context    = NULL;
+    CFIndex                    count      = 0;
+    DAFileSystemRef            filesystem = DADiskGetFileSystem( disk );
+    CFIndex                    index      = 0;
+    CFDictionaryRef            map        = NULL;
+    CFMutableStringRef         options    = NULL;
+    int                        status     = 0;
 
     /*
      * Initialize our minimal state.
@@ -613,7 +601,7 @@ void DAMountWithArguments( DADiskRef disk, CFURLRef mountpoint, DAMountCallback 
 
     if ( CFEqual( options, CFSTR( "automatic" ) ) )
     {
-        automatic = TRUE;
+        automatic = NULL;
 
         CFStringReplaceAll( options, CFSTR( "" ) );
     }
@@ -697,26 +685,14 @@ void DAMountWithArguments( DADiskRef disk, CFURLRef mountpoint, DAMountCallback 
          * Determine whether the volume is to be mounted.
          */
 
-        if ( automatic )
+        if ( automatic == NULL )
         {
-            if ( CFDictionaryGetValue( map, kDAMountMapMountAutomaticKey ) == kCFBooleanFalse )
+            automatic = CFDictionaryGetValue( map, kDAMountMapMountAutomaticKey );
+
+            if ( automatic == kCFBooleanTrue )
             {
-                status = ECANCELED;
-
-                goto DAMountWithArgumentsErr;
-            }
-
-            if ( CFDictionaryGetValue( map, kDAMountMapMountAutomaticKey ) == NULL )
-            {
-                if ( DAMountGetPreference( disk, kDAMountPreferenceDefer ) )
-                {
-                    if ( gDAConsoleUser == NULL )
-                    {
-                        status = ECANCELED;
-
-                        goto DAMountWithArgumentsErr;
-                    }
-                }
+                DADiskSetOption( disk, kDADiskOptionMountAutomatic,        TRUE );
+                DADiskSetOption( disk, kDADiskOptionMountAutomaticNoDefer, TRUE );
             }
         }
 
@@ -801,27 +777,37 @@ void DAMountWithArguments( DADiskRef disk, CFURLRef mountpoint, DAMountCallback 
      * Determine whether the volume is to be mounted.
      */
 
-    if ( automatic )
+    if ( automatic == NULL )
     {
-        if ( DADiskGetOption( disk, kDADiskOptionMountAutomatic ) == FALSE )
+        if ( DADiskGetOption( disk, kDADiskOptionMountAutomatic ) )
         {
-            status = ECANCELED;
-
-            goto DAMountWithArgumentsErr;
+            if ( DADiskGetOption( disk, kDADiskOptionMountAutomaticNoDefer ) )
+            {
+                automatic = kCFBooleanTrue;
+            }
+        }
+        else
+        {
+            automatic = kCFBooleanFalse;
         }
 
-        if ( DADiskGetOption( disk, kDADiskOptionMountAutomaticNoDefer ) == FALSE )
+        if ( automatic == NULL )
         {
-            if ( DAMountGetPreference( disk, kDAMountPreferenceDefer ) )
+            if ( gDAConsoleUser == NULL )
             {
-                if ( gDAConsoleUser == NULL )
+                if ( DAMountGetPreference( disk, kDAMountPreferenceDefer ) )
                 {
-                    status = ECANCELED;
-
-                    goto DAMountWithArgumentsErr;
+                    automatic = kCFBooleanFalse;
                 }
             }
         }
+    }
+
+    if ( automatic == kCFBooleanFalse )
+    {
+        status = ECANCELED;
+
+        goto DAMountWithArgumentsErr;
     }
 
     /*
@@ -854,17 +840,37 @@ void DAMountWithArguments( DADiskRef disk, CFURLRef mountpoint, DAMountCallback 
 
 ///w:start
     if ( CFEqual( DAFileSystemGetKind( filesystem ), CFSTR( "hfs" ) ) )
-///w:stop
-    if ( DADiskGetUserRUID( disk ) )
     {
-        ___CFStringInsertFormat( options, 0, CFSTR( "-u=%d," ), DADiskGetUserRUID( disk ) );
+///w:stop
+    if ( DADiskGetMode( disk ) )
+    {
         ___CFStringInsertFormat( options, 0, CFSTR( "-m=%o," ), DADiskGetMode( disk ) );
     }
     else
     {
-        ___CFStringInsertFormat( options, 0, CFSTR( "-u=%d," ), ___UID_UNKNOWN );
-        ___CFStringInsertFormat( options, 0, CFSTR( "-m=%o," ), DADiskGetMode( disk ) );
+        ___CFStringInsertFormat( options, 0, CFSTR( "-m=%o," ), 0755 );
     }
+
+    if ( DADiskGetUserRGID( disk ) )
+    {
+        ___CFStringInsertFormat( options, 0, CFSTR( "-g=%d," ), DADiskGetUserRGID( disk ) );
+    }
+    else
+    {
+        ___CFStringInsertFormat( options, 0, CFSTR( "-g=%d," ), ___GID_UNKNOWN );
+    }
+
+    if ( DADiskGetUserRUID( disk ) )
+    {
+        ___CFStringInsertFormat( options, 0, CFSTR( "-u=%d," ), DADiskGetUserRUID( disk ) );
+    }
+    else
+    {
+        ___CFStringInsertFormat( options, 0, CFSTR( "-u=%d," ), ___UID_UNKNOWN );
+    }
+///w:start
+    }
+///w:stop
 
     CFStringTrim( options, CFSTR( "," ) );
 
@@ -897,10 +903,9 @@ void DAMountWithArguments( DADiskRef disk, CFURLRef mountpoint, DAMountCallback 
     context->options         = options;
 
 ///w:start
-    if ( DADiskGetUserRUID( disk ) == ___UID_UNKNOWN ||
-         ( CFEqual( DAFileSystemGetKind( filesystem ), CFSTR( "cd9660" ) ) == FALSE &&
-           CFEqual( DAFileSystemGetKind( filesystem ), CFSTR( "hfs"    ) ) == FALSE &&
-           CFEqual( DAFileSystemGetKind( filesystem ), CFSTR( "ufs"    ) ) == FALSE ) )
+    if ( CFEqual( DAFileSystemGetKind( filesystem ), CFSTR( "cd9660" ) ) == FALSE &&
+         CFEqual( DAFileSystemGetKind( filesystem ), CFSTR( "hfs"    ) ) == FALSE &&
+         CFEqual( DAFileSystemGetKind( filesystem ), CFSTR( "ufs"    ) ) == FALSE )
     {
         DAFileSystemMountWithArguments( DADiskGetFileSystem( disk ),
                                         DADiskGetDevice( disk ),

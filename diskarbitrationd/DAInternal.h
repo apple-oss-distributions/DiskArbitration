@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -35,6 +33,8 @@ extern "C" {
 #endif /* __cplusplus */
 
 #define ___GID_ADMIN 80
+
+#define ___GID_WHEEL 0
 #define ___UID_ROOT  0
 
 #define ___GID_UNKNOWN 99
@@ -130,8 +130,11 @@ __private_extern__ CFDataRef              _DASerialize( CFAllocatorRef allocator
 __private_extern__ CFDataRef              _DASerializeDiskDescription( CFAllocatorRef allocator, CFDictionaryRef description );
 __private_extern__ CFTypeRef              _DAUnserialize( CFAllocatorRef allocator, CFDataRef data );
 __private_extern__ CFMutableDictionaryRef _DAUnserializeDiskDescription( CFAllocatorRef allocator, CFDataRef data );
-__private_extern__ CFTypeRef              _DAUnserializeWithBytes( CFAllocatorRef allocator, vm_address_t bytes, vm_size_t length );
 __private_extern__ CFMutableDictionaryRef _DAUnserializeDiskDescriptionWithBytes( CFAllocatorRef allocator, vm_address_t bytes, vm_size_t length );
+__private_extern__ CFTypeRef              _DAUnserializeWithBytes( CFAllocatorRef allocator, vm_address_t bytes, vm_size_t length );
+
+__private_extern__ char * _DAVolumeCopyID( const struct statfs * fs );
+__private_extern__ char * _DAVolumeGetID( const struct statfs * fs );
 
 #ifdef __cplusplus
 }

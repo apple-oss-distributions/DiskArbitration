@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -48,13 +46,15 @@
 #include <sys/mount.h>
 #include <sys/param.h>
 #include <IOKit/IOBSD.h>
+#include <IOKit/IOMessage.h>
 #include <IOKit/storage/IOMedia.h>
 ///w:start
+#include <sys/stat.h>
 #include <SystemConfiguration/SCDynamicStoreCopySpecificPrivate.h>
 ///w:stop
 
 static CFMachPortRef       __gDAServer      = NULL;
-static mach_port_t         __gDAServerPort  = NULL;
+static mach_port_t         __gDAServerPort  = MACH_PORT_NULL;
 static mach_msg_header_t * __gDAServerReply = NULL;
 
 static DADiskRef __DADiskListGetDisk( const char * diskID )
@@ -99,6 +99,38 @@ static DADiskRef __DADiskListGetDiskWithIOMedia( io_service_t media )
     }
 
     return NULL;
+}
+
+static void __DAMediaBusyStateChangedCallback( void * context, io_service_t service, void * argument )
+{
+    DADiskRef disk;
+
+    disk = __DADiskListGetDiskWithIOMedia( service );
+
+    if ( disk )
+    {
+        if ( argument )
+        {
+            DADiskSetBusy( disk, CFAbsoluteTimeGetCurrent( ) );
+        }
+        else
+        {
+            DADiskSetBusy( disk, 0 );
+        }
+    }
+}
+
+static void __DAMediaChangedCallback( void * context, io_service_t service, natural_t message, void * argument )
+{
+    switch ( message )
+    {
+        case kIOMessageServiceBusyStateChange:
+        {
+            __DAMediaBusyStateChangedCallback( context, service, argument );
+
+            break;
+        }
+    }
 }
 
 static void __DAMediaDisappearedUnmountCallback( int status, void * context )
@@ -186,7 +218,6 @@ static DASessionRef __DASessionListGetSession( mach_port_t sessionID )
 void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void * info )
 {
     CFStringRef key;
-    Boolean haveConsoleInfo = FALSE;
 
     DALogDebugHeader( "configd [0] -> %s", gDAProcessNameID );
 
@@ -217,27 +248,17 @@ void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void 
         {
             CFIndex count;
             CFIndex index;
+///w:start
+            CFArrayRef users;
+
+            users = SCDynamicStoreCopyConsoleInformation( session );
+///w:stop
 
             DALogDebug( "  console user = %@ [%d].", gDAConsoleUser, gDAConsoleUserUID );
 
             /*
              * A console user has logged in.
              */
-
-///w:start
-            if ( session )
-            {
-                CFArrayRef array;
-
-                array = SCDynamicStoreCopyConsoleInformation( session );
-
-                if ( array )
-                {
-                    CFRelease( array );
-		    haveConsoleInfo = TRUE;
-                }
-            }
-///w:stop
 
             count = CFArrayGetCount( gDADiskList );
 
@@ -246,25 +267,49 @@ void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void 
                 DADiskRef disk;
 
                 disk = ( void * ) CFArrayGetValueAtIndex( gDADiskList, index );
-
+///w:start
                 /*
                  * Set the BSD permissions for this media object.
                  */
             
                 if ( DADiskGetUserRUID( disk ) == ___UID_UNKNOWN )
                 {
-                    DADiskSetUserEGID( disk, gDAConsoleUserGID );
-                    DADiskSetUserEUID( disk, gDAConsoleUserUID );
-            
-                    chown( DADiskGetBSDPath( disk, TRUE  ), ( uid_t ) gDAConsoleUserUID, -1 );
-                    chown( DADiskGetBSDPath( disk, FALSE ), ( uid_t ) gDAConsoleUserUID, -1 );
+                    mode_t deviceMode;
+                    uid_t  deviceUser;
+
+                    deviceMode = 0640;
+                    deviceUser = gDAConsoleUserUID;
+
+                    if ( users )
+                    {
+                        if ( CFArrayGetCount( users ) > 1 )
+                        {
+                            deviceMode = 0666;
+                            deviceUser = ___UID_ROOT;
+                        }
+                    }
+
+                    if ( DADiskGetDescription( disk, kDADiskDescriptionMediaWritableKey ) == kCFBooleanFalse )
+                    {
+                        deviceMode &= 0444;
+                    }
+
+                    chmod( DADiskGetBSDPath( disk, TRUE  ), deviceMode );
+                    chmod( DADiskGetBSDPath( disk, FALSE ), deviceMode );
+
+                    chown( DADiskGetBSDPath( disk, TRUE  ), deviceUser, -1 );
+                    chown( DADiskGetBSDPath( disk, FALSE ), deviceUser, -1 );
                 }
-///w:start
-		if ( haveConsoleInfo )
-		{
-                    continue;
-		}
+
+                if ( users )
+                {
+                    if ( session )
+                    {
+                        continue;
+                    }
+                }
 ///w:stop
+
                 /*
                  * Mount this volume.
                  */
@@ -277,15 +322,14 @@ void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void 
                     }
                 }
             }
-///w:start
-	    if ( haveConsoleInfo )
-	    {
-		CFRelease( key );
-		return;
-	    }
-///w:stop
 
             DAStageSignal( );
+///w:start
+            if ( users )
+            {
+                CFRelease( users );
+            }
+///w:stop
         }
         else
         {
@@ -305,19 +349,31 @@ void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void 
                 DADiskRef disk;
 
                 disk = ( void * ) CFArrayGetValueAtIndex( gDADiskList, index );
-
+///w:start
                 /*
                  * Set the BSD permissions for this media object.
                  */
-            
+
                 if ( DADiskGetUserRUID( disk ) == ___UID_UNKNOWN )
                 {
-                    DADiskSetUserEGID( disk, ___GID_ADMIN );
-                    DADiskSetUserEUID( disk, ___UID_ROOT  );
+                    mode_t deviceMode;
+                    uid_t  deviceUser;
 
-                    chown( DADiskGetBSDPath( disk, TRUE  ), ___UID_ROOT, -1 );
-                    chown( DADiskGetBSDPath( disk, FALSE ), ___UID_ROOT, -1 );
+                    deviceMode = 0640;
+                    deviceUser = ___UID_ROOT;
+
+                    if ( DADiskGetDescription( disk, kDADiskDescriptionMediaWritableKey ) == kCFBooleanFalse )
+                    {
+                        deviceMode &= 0444;
+                    }
+
+                    chmod( DADiskGetBSDPath( disk, TRUE  ), deviceMode );
+                    chmod( DADiskGetBSDPath( disk, FALSE ), deviceMode );
+
+                    chown( DADiskGetBSDPath( disk, TRUE  ), deviceUser, -1 );
+                    chown( DADiskGetBSDPath( disk, FALSE ), deviceUser, -1 );
                 }
+///w:stop
 
                 /*
                  * Unmount this volume.
@@ -325,25 +381,34 @@ void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void 
 
                 if ( DADiskGetDescription( disk, kDADiskDescriptionVolumeMountableKey ) == kCFBooleanTrue )
                 {
+                    Boolean unmount;
+
+                    unmount = FALSE;
+
+                    if ( DAMountGetPreference( disk, kDAMountPreferenceDefer ) )
+                    {
+                        if ( DADiskGetOption( disk, kDADiskOptionMountAutomaticNoDefer ) == FALSE )
+                        {
+                            unmount = TRUE;
+                        }
+                    }
+
                     if ( DADiskGetOption( disk, kDADiskOptionEjectUponLogout ) )
                     {
-                        DADiskUnmount( disk, NULL );
+                        unmount = TRUE;
+                    }
 
-                        DADiskEject( disk, NULL );
+                    if ( DADiskGetUserEUID( disk ) )
+                    {
+                        if ( DADiskGetUserEUID( disk ) == userUID )
+                        {
+                            unmount = TRUE;
+                        }
                     }
-                    else if ( DAMountGetPreference( disk, kDAMountPreferenceDefer ) )
+
+                    if ( unmount )
                     {
                         DADiskUnmount( disk, NULL );
-                    }
-                    else
-                    {
-                        if ( DADiskGetUserEUID( disk ) )
-                        {
-                            if ( DADiskGetUserEUID( disk ) == userUID )
-                            {
-                                DADiskUnmount( disk, NULL );
-                            }
-                        }
                     }
                 }
             }
@@ -381,6 +446,11 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
      */
 
     io_service_t media;
+///w:start
+    CFArrayRef users;
+
+    users = SCDynamicStoreCopyConsoleInformation( NULL );
+///w:stop
 
     /*
      * Iterate through the media objects.
@@ -399,8 +469,6 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
         if ( disk )
         {
             __DAMediaPropertyChangedCallback( NULL, media );
-
-            DAUnitSetState( disk, kDAUnitStateEjected, FALSE );
         }
         else
         {
@@ -414,6 +482,9 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
 
             if ( disk )
             {
+                int         busy;
+                io_object_t busyNotification;
+
                 /*
                  * Determine whether a media object disappearance and appearance occurred.  We must do this
                  * since the I/O Kit appearance queue is separate from the I/O Kit disappearance queue, and
@@ -436,28 +507,126 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
                 }
 
                 /*
+                 * Create the "media changed" notification.
+                 */
+
+                busyNotification = IO_OBJECT_NULL;
+
+                IOServiceAddInterestNotification( gDAMediaPort, media, kIOBusyInterest, __DAMediaChangedCallback, NULL, &busyNotification );
+
+                if ( busyNotification )
+                {
+                    DADiskSetBusyNotification( disk, busyNotification );
+
+                    IOObjectRelease( busyNotification );
+                }
+
+                /*
+                 * Set the busy state.
+                 */
+
+                busy = 0;
+
+                IOServiceGetBusyState( media, &busy );
+
+                if ( busy )
+                {
+                    DADiskSetBusy( disk, CFAbsoluteTimeGetCurrent( ) );
+                }
+
+                /*
                  * Set the BSD permissions for this media object.
                  */
 
-                if ( DADiskGetUserRUID( disk ) )
+                if ( DADiskGetUserRUID( disk ) == ___UID_UNKNOWN )
                 {
-                    if ( DADiskGetUserRUID( disk ) == ___UID_UNKNOWN )
+                    if ( gDAConsoleUser )
                     {
-                        if ( gDAConsoleUser )
+///w:start
+                        mode_t deviceMode;
+                        uid_t  deviceUser;
+
+                        deviceMode = 0640;
+                        deviceUser = gDAConsoleUserUID;
+
+                        if ( users )
                         {
-                            DADiskSetUserEGID( disk, gDAConsoleUserGID );
-                            DADiskSetUserEUID( disk, gDAConsoleUserUID );
-
-                            chown( DADiskGetBSDPath( disk, TRUE  ), gDAConsoleUserUID, -1 );
-                            chown( DADiskGetBSDPath( disk, FALSE ), gDAConsoleUserUID, -1 );
-
-                            ___DADisplayUpdateActivity( );
+                            if ( CFArrayGetCount( users ) > 1 )
+                            {
+                                deviceMode = 0666;
+                                deviceUser = ___UID_ROOT;
+                            }
                         }
+
+                        if ( DADiskGetDescription( disk, kDADiskDescriptionMediaWritableKey ) == kCFBooleanFalse )
+                        {
+                            deviceMode &= 0444;
+                        }
+
+                        chmod( DADiskGetBSDPath( disk, TRUE  ), deviceMode );
+                        chmod( DADiskGetBSDPath( disk, FALSE ), deviceMode );
+
+                        chown( DADiskGetBSDPath( disk, TRUE  ), deviceUser, -1 );
+                        chown( DADiskGetBSDPath( disk, FALSE ), deviceUser, -1 );
+///w:stop
+
+                        ___DADisplayUpdateActivity( );
                     }
-                    else
+                }
+                else
+                {
+                    if ( DADiskGetMode( disk ) )
+                    {
+                        chmod( DADiskGetBSDPath( disk, TRUE  ), DADiskGetMode( disk ) & 0666 );
+                        chmod( DADiskGetBSDPath( disk, FALSE ), DADiskGetMode( disk ) & 0666 );
+                    }
+
+                    if ( DADiskGetUserRGID( disk ) )
+                    {
+                        chown( DADiskGetBSDPath( disk, TRUE  ), -1, DADiskGetUserRGID( disk ) );
+                        chown( DADiskGetBSDPath( disk, FALSE ), -1, DADiskGetUserRGID( disk ) );
+                    }
+
+                    if ( DADiskGetUserRUID( disk ) )
                     {
                         chown( DADiskGetBSDPath( disk, TRUE  ), DADiskGetUserRUID( disk ), -1 );
                         chown( DADiskGetBSDPath( disk, FALSE ), DADiskGetUserRUID( disk ), -1 );
+                    }
+                }
+
+                /*
+                 * Set the BSD link for this media object.
+                 */
+
+                if ( DADiskGetBSDLink( disk, TRUE ) )
+                {
+                    int status;
+
+                    status = strncmp( DADiskGetBSDLink( disk, TRUE ), _PATH_DEV "disk", strlen( _PATH_DEV "disk" ) );
+
+                    if ( status )
+                    {
+                         status = link( DADiskGetBSDPath( disk, TRUE ), DADiskGetBSDLink( disk, TRUE ) );
+
+                        if ( status == 0 )
+                        {
+                            status = link( DADiskGetBSDPath( disk, FALSE ), DADiskGetBSDLink( disk, FALSE ) );
+
+                            if ( status )
+                            {
+                                unlink( DADiskGetBSDLink( disk, TRUE ) );
+                            }
+                        }
+                    }
+
+                    if ( status )
+                    {
+                        DALogDebugHeader( "iokit [0] -> %s", gDAProcessNameID );
+
+                        DALogError( "unable to link %@ to %s.", disk, DADiskGetBSDLink( disk, TRUE ) );
+
+                        DADiskSetBSDLink( disk, TRUE,  NULL );
+                        DADiskSetBSDLink( disk, FALSE, NULL );
                     }
                 }
 
@@ -470,8 +639,6 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
                 DALogDebug( "  created disk, id = %@.", disk );
 
                 DAUnitSetState( disk, kDAUnitStateStagedUnreadable, FALSE );
-
-                DAUnitSetState( disk, kDAUnitStateEjected, FALSE );
 
                 CFArrayInsertValueAtIndex( gDADiskList, 0, disk );
 
@@ -486,7 +653,7 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
 
                 if ( IOObjectIsEqualTo( media, service ) )
                 {
-                    notification = NULL;
+                    notification = IO_OBJECT_NULL;
                 }
             }
         }
@@ -495,6 +662,12 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
     }
 
     DAStageSignal( );
+///w:start
+    if ( users )
+    {
+        CFRelease( users );
+    }
+///w:stop
 }
 
 void _DAMediaDisappearedCallback( void * context, io_iterator_t notification )
@@ -553,6 +726,16 @@ void _DAMediaDisappearedCallback( void * context, io_iterator_t notification )
 
             DALogDebug( "  removed disk, id = %@.", disk );
 
+            if ( DADiskGetBSDLink( disk, TRUE ) )
+            {
+                unlink( DADiskGetBSDLink( disk, TRUE ) );
+            }
+
+            if ( DADiskGetBSDLink( disk, FALSE ) )
+            {
+                unlink( DADiskGetBSDLink( disk, FALSE ) );
+            }
+
             path = DADiskGetDescription( disk, kDADiskDescriptionVolumePathKey );
 
             if ( path )
@@ -589,7 +772,7 @@ void _DAMediaDisappearedCallback( void * context, io_iterator_t notification )
             {
                 if ( CFEqual( disk, context ) )
                 {
-                    notification = NULL;
+                    notification = IO_OBJECT_NULL;
                 }
             }
 
@@ -848,7 +1031,7 @@ kern_return_t _DAServerDiskRefresh( mach_port_t _session, caddr_t _disk )
     status = kDAReturnBadArgument;
 
     DALogDebugHeader( "? [?]:%d -> %s", _session, gDAProcessNameID );
-    
+
     if ( _session )
     {
         DASessionRef session;
@@ -888,7 +1071,7 @@ kern_return_t _DAServerDiskRefresh( mach_port_t _session, caddr_t _disk )
 
                 for ( mountListIndex = 0; mountListIndex < mountListCount; mountListIndex++ )
                 {
-                    if ( strcmp( mountList[mountListIndex].f_mntonname, _disk ) == 0 )
+                    if ( strcmp( _DAVolumeGetID( mountList + mountListIndex ), _disk ) == 0 )
                     {
                         break;
                     }
@@ -896,31 +1079,19 @@ kern_return_t _DAServerDiskRefresh( mach_port_t _session, caddr_t _disk )
 
                 if ( mountListIndex < mountListCount )
                 {
-                    CFURLRef path;
+                    disk = DADiskCreateFromVolumePath( kCFAllocatorDefault, mountList + mountListIndex );
 
-                    path = CFURLCreateFromFileSystemRepresentation( kCFAllocatorDefault,
-                                                                    mountList[mountListIndex].f_mntonname,
-                                                                    strlen( mountList[mountListIndex].f_mntonname ),
-                                                                    TRUE );
-
-                    if ( path )
+                    if ( disk )
                     {
-                        disk = DADiskCreateFromVolumePath( kCFAllocatorDefault, path );
+                        DALogDebug( "  created disk, id = %@.", disk );
 
-                        if ( disk )
-                        {
-                            DALogDebug( "  created disk, id = %@.", disk );
+                        CFArrayInsertValueAtIndex( gDADiskList, 0, disk );
 
-                            CFArrayInsertValueAtIndex( gDADiskList, 0, disk );
+                        DAStageSignal( );
 
-                            DAStageSignal( );
+                        status = kDAReturnSuccess;
 
-                            status = kDAReturnSuccess;
-
-                            CFRelease( disk );
-                        }
-
-                        CFRelease( path );
+                        CFRelease( disk );
                     }
                 }
             }
@@ -1236,6 +1407,8 @@ kern_return_t _DAServerSessionCopyCallbackQueue( mach_port_t _session, vm_addres
                     callback = ( void * ) CFArrayGetValueAtIndex( callbacks, index );
 
                     DACallbackSetDisk( callback, NULL );
+
+                    DACallbackSetMatch( callback, NULL );
 
                     DACallbackSetSession( callback, NULL );
                 }
@@ -1801,7 +1974,7 @@ CFRunLoopSourceRef DAServerCreateRunLoopSource( CFAllocatorRef allocator, CFInde
              * Register the Disk Arbitration master port.
              */
             
-            if ( __gDAServerPort == NULL )
+            if ( __gDAServerPort == MACH_PORT_NULL )
             {
                 status = bootstrap_create_server( bootstrapPort, "/usr/sbin/diskarbitrationd", getuid( ), FALSE, &privatePort );
 

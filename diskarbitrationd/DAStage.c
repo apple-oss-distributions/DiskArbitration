@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -293,10 +291,14 @@ static void __DAStageDispatch( void * info )
 
         DAIdleCallback( );
 
-        DAMainRendezvous( );
-
         if ( gDAConsoleUser )
         {
+///w:start
+            if ( CFEqual( gDAConsoleUser, CFSTR( "loginwindow" ) ) )
+            {
+                return;
+            }
+///w:stop
             /*
              * Determine whether a unit is unreadable.
              */
@@ -311,40 +313,37 @@ static void __DAStageDispatch( void * info )
 
                 if ( DADiskGetDescription( disk, kDADiskDescriptionMediaWholeKey ) == kCFBooleanTrue )
                 {
-                    if ( DADiskGetOption( disk, kDADiskOptionMountAutomatic ) )
+                    if ( DAUnitGetState( disk, kDAUnitStateStagedUnreadable ) == FALSE )
                     {
-                        if ( DAUnitGetState( disk, kDAUnitStateStagedUnreadable ) == FALSE )
-                        {
 ///w:start
-                            io_service_t media;
+                        io_service_t media;
 
-                            media = DADiskGetIOMedia( disk );
+                        media = DADiskGetIOMedia( disk );
 
-                            if ( media )
+                        if ( media )
+                        {
+                            CFTypeRef object;
+
+                            object = IORegistryEntrySearchCFProperty( media,
+                                                                      kIOServicePlane,
+                                                                      CFSTR( "image-path" ),
+                                                                      kCFAllocatorDefault,
+                                                                      kIORegistryIterateParents | kIORegistryIterateRecursively );
+
+                            if ( object )
                             {
-                                CFTypeRef object;
+                                CFRelease( object );
 
-                                object = IORegistryEntrySearchCFProperty( media,
-                                                                          kIOServicePlane,
-                                                                          CFSTR( "image-path" ),
-                                                                          kCFAllocatorDefault,
-                                                                          kIORegistryIterateParents | kIORegistryIterateRecursively );
-
-                                if ( object )
-                                {
-                                    CFRelease( object );
-
-                                    continue;
-                                }
+                                continue;
                             }
-///w:stop
-                            if ( _DAUnitIsUnreadable( disk ) )
-                            {
-                                DADialogShowDeviceUnreadable( disk );
-                            }
-
-                            DAUnitSetState( disk, kDAUnitStateStagedUnreadable, TRUE );
                         }
+///w:stop
+                        if ( _DAUnitIsUnreadable( disk ) )
+                        {
+                            DADialogShowDeviceUnreadable( disk );
+                        }
+
+                        DAUnitSetState( disk, kDAUnitStateStagedUnreadable, TRUE );
                     }
                 }
             }
@@ -373,8 +372,6 @@ static void __DAStageMount( DADiskRef disk )
         DADiskSetState( disk, kDADiskStateCommandActive, TRUE );
 
         DAUnitSetState( disk, kDAUnitStateCommandActive, TRUE );
-
-	DAUnitSetState( disk, kDAUnitStateEjected, FALSE );
 
         DALogDebug( "  mounted disk, id = %@, ongoing.", disk );
 
@@ -979,6 +976,9 @@ static void __DAStageRepair( DADiskRef disk )
 
                         CFRelease( path );
                     }
+
+                    DADiskSetOption( disk, kDADiskOptionMountAutomatic,        TRUE );
+                    DADiskSetOption( disk, kDADiskOptionMountAutomaticNoDefer, TRUE );
                 }
 
                 DADiskSetState( disk, kDADiskStateRequireRepair,       FALSE );

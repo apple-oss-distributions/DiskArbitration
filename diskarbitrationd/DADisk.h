@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -26,6 +24,7 @@
 #ifndef __DISKARBITRATIOND_DADISK__
 #define __DISKARBITRATIOND_DADISK__
 
+#include <sys/mount.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
 #include <IOKit/IOKitLib.h>
@@ -64,8 +63,11 @@ typedef UInt32 DADiskState;
 
 extern CFComparisonResult DADiskCompareDescription( DADiskRef disk, CFStringRef description, CFTypeRef value );
 extern DADiskRef          DADiskCreateFromIOMedia( CFAllocatorRef allocator, io_service_t media );
-extern DADiskRef          DADiskCreateFromVolumePath( CFAllocatorRef allocator, CFURLRef path );
+extern DADiskRef          DADiskCreateFromVolumePath( CFAllocatorRef allocator, const struct statfs * fs );
+extern CFAbsoluteTime     DADiskGetBusy( DADiskRef disk );
+extern io_object_t        DADiskGetBusyNotification( DADiskRef disk );
 extern CFURLRef           DADiskGetBypath( DADiskRef disk );
+extern const char *       DADiskGetBSDLink( DADiskRef disk, Boolean raw );
 extern dev_t              DADiskGetBSDNode( DADiskRef disk );
 extern const char *       DADiskGetBSDPath( DADiskRef disk, Boolean raw );
 extern UInt32             DADiskGetBSDUnit( DADiskRef disk );
@@ -90,7 +92,10 @@ extern uid_t              DADiskGetUserRUID( DADiskRef disk );
 extern void               DADiskInitialize( void );
 extern void               DADiskLog( DADiskRef disk );
 extern Boolean            DADiskMatch( DADiskRef disk, CFDictionaryRef match );
+extern void               DADiskSetBusy( DADiskRef disk, CFAbsoluteTime busy );
+extern void               DADiskSetBusyNotification( DADiskRef disk, io_object_t notification );
 extern void               DADiskSetBypath( DADiskRef disk, CFURLRef bypath );
+extern void               DADiskSetBSDLink( DADiskRef disk, Boolean raw, const char * link );
 extern void               DADiskSetClaim( DADiskRef disk, DACallbackRef claim );
 extern void               DADiskSetContext( DADiskRef disk, CFTypeRef context );
 extern void               DADiskSetContextRe( DADiskRef disk, CFTypeRef context );

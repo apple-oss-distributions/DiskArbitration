@@ -1,9 +1,7 @@
 /*
- * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -172,24 +170,11 @@ DAReturn _DADiskRefresh( DADiskRef disk )
 
         mountListCount = getmntinfo( &mountList, MNT_NOWAIT );
 
-        if ( DADiskGetDescription( disk, kDADiskDescriptionMediaPathKey ) )
+        for ( mountListIndex = 0; mountListIndex < mountListCount; mountListIndex++ )
         {
-            for ( mountListIndex = 0; mountListIndex < mountListCount; mountListIndex++ )
+            if ( strcmp( _DAVolumeGetID( mountList + mountListIndex ), DADiskGetID( disk ) ) == 0 )
             {
-                if ( strcmp( mountList[mountListIndex].f_mntfromname, DADiskGetID( disk ) ) == 0 )
-                {
-                    break;
-                }
-            }
-        }
-        else
-        {
-            for ( mountListIndex = 0; mountListIndex < mountListCount; mountListIndex++ )
-            {
-                if ( strcmp( mountList[mountListIndex].f_mntonname, DADiskGetID( disk ) ) == 0 )
-                {
-                    break;
-                }
+                break;
             }
         }
 
@@ -235,7 +220,7 @@ DAReturn _DADiskRefresh( DADiskRef disk )
 
         for ( mountListIndex = 0; mountListIndex < mountListCount; mountListIndex++ )
         {
-            if ( strcmp( mountList[mountListIndex].f_mntfromname, DADiskGetID( disk ) ) == 0 )
+            if ( strcmp( _DAVolumeGetID( mountList + mountListIndex ), DADiskGetID( disk ) ) == 0 )
             {
                 break;
             }
@@ -312,18 +297,20 @@ DAReturn _DADiskSetEncoding( DADiskRef disk, CFStringEncoding encoding )
 
     status = CFEqual( name1, name2 );
 ///w:start
-if ( 0 )
+//  if ( status )  { status = kDAReturnSuccess; goto _DADiskSetEncodingErr; }
 ///w:stop
-    if ( status )  { status = kDAReturnSuccess; goto _DADiskSetEncodingErr; }
 
     DADiskSetDescription( disk, kDADiskDescriptionVolumeNameKey, name2 );
 
     CFArrayAppendValue( keys, kDADiskDescriptionVolumeNameKey );
 
 ///w:start
-if ( status == 0 )
+    if ( status == FALSE )
 ///w:stop
     path2 = DAMountCreateMountPointWithAction( disk, kDAMountPointActionMove );
+///w:start
+    status = kDAReturnSuccess;
+///w:stop
 
     if ( path2 )
     {
@@ -364,7 +351,17 @@ Boolean _DAUnitIsUnreadable( DADiskRef disk )
 
             name = DADiskGetDescription( item, kDADiskDescriptionMediaBSDNameKey );
 
+            if ( DADiskGetBusy( item ) )
+            {
+                return FALSE;
+            }
+
             if ( DADiskGetClaim( item ) )
+            {
+                return FALSE;
+            }
+
+            if ( DADiskGetOption( item, kDADiskOptionMountAutomatic ) == FALSE )
             {
                 return FALSE;
             }
