@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2007 Apple Inc.  All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -25,6 +25,7 @@
 #define __DISKARBITRATIOND_DABASE__
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,8 +37,12 @@ extern "C" {
 
 typedef uint16_t ___attr_t;
 
+typedef char ___io_path_t[1024];
+
 __private_extern__ int             ___chattr( const char * path, ___attr_t attr, ___attr_t noattr );
+__private_extern__ int             ___initgroups( uid_t uid, gid_t basegid );
 __private_extern__ int             ___isautofs( const char * path );
+__private_extern__ int             ___mkdir( const char * path, mode_t mode );
 __private_extern__ void            ___CFArrayIntersect( CFMutableArrayRef array1, CFArrayRef array2 );
 __private_extern__ CFStringRef     ___CFBundleCopyLocalizedStringInDirectory( CFURLRef bundleURL, CFStringRef key, CFStringRef value, CFStringRef table );
 __private_extern__ CFURLRef        ___CFBundleCopyResourceURLInDirectory( CFURLRef bundleURL, CFStringRef resourcePath );
@@ -53,6 +58,7 @@ __private_extern__ CFUUIDRef       ___CFUUIDCreateFromName( CFAllocatorRef alloc
 __private_extern__ CFUUIDRef       ___CFUUIDCreateFromString( CFAllocatorRef allocator, CFStringRef string );
 __private_extern__ CFStringRef     ___CFURLCopyRawDeviceFileSystemPath( CFURLRef url, CFURLPathStyle pathStyle );
 __private_extern__ void            ___DADisplayUpdateActivity( void );
+__private_extern__ kern_return_t   ___IORegistryEntryGetPath( io_registry_entry_t entry, const io_name_t plane, ___io_path_t path );
 
 #ifdef __cplusplus
 }

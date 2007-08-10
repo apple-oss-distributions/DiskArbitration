@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2007 Apple Inc.  All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -27,12 +27,13 @@
 
 #include <fcntl.h>
 #include <paths.h>
+#include <pwd.h>
 #include <sysexits.h>
 #include <unistd.h>
-#include <openssl/md5.h>
 #include <sys/attr.h>
+#include <sys/stat.h>
+#include <CommonCrypto/CommonDigest.h>
 #include <CoreFoundation/CFBundlePriv.h>
-#include <IOKit/IOKitLib.h>
 #include <IOKit/hidsystem/IOHIDLib.h>
 
 __private_extern__ int ___chattr( const char * path, ___attr_t attr, ___attr_t noattr )
@@ -74,6 +75,20 @@ __private_extern__ int ___chattr( const char * path, ___attr_t attr, ___attr_t n
     return status;
 }
 
+__private_extern__ int ___initgroups( uid_t uid, gid_t basegid )
+{
+    struct passwd * user;
+
+    user = getpwuid( uid );
+
+    if ( user )
+    {
+        return initgroups( user->pw_name, basegid );
+    }
+
+    return -1;
+}
+
 __private_extern__ int ___isautofs( const char * path )
 {
     /*
@@ -98,6 +113,48 @@ __private_extern__ int ___isautofs( const char * path )
     }
 
     return 0;
+}
+
+__private_extern__ int ___mkdir( const char * path, mode_t mode )
+{
+    /*
+     * Make a directory.
+     */
+
+    int status;
+
+    status = -1;
+
+    if ( path )
+    {
+        char * template;
+
+        asprintf( &template, "%s.XXXXXX", path );
+
+        if ( template )
+        {
+            status = mkdtemp( template ) ? 0 : -1;
+
+            if ( status == 0 )
+            {
+                status = chmod( template, mode );
+
+                if ( status == 0 )
+                {
+                    status = rename( template, path );
+                }
+
+                if ( status )
+                {
+                    rmdir( template );
+                }
+            }
+
+            free( template );
+        }
+    }
+
+    return status;
 }
 
 __private_extern__ void ___CFArrayIntersect( CFMutableArrayRef array1, CFArrayRef array2 )
@@ -371,7 +428,7 @@ __private_extern__ Boolean ___CFStringGetCString( CFStringRef string, char * buf
 
     length--;
 
-    CFStringGetBytes( string, CFRangeMake( 0, CFStringGetLength( string ) ), kCFStringEncodingUTF8, 0, FALSE, buffer, length, &length );
+    CFStringGetBytes( string, CFRangeMake( 0, CFStringGetLength( string ) ), kCFStringEncodingUTF8, 0, FALSE, ( void * ) buffer, length, &length );
 
     buffer[length] = 0;
 
@@ -431,17 +488,17 @@ __private_extern__ CFUUIDRef ___CFUUIDCreateFromName( CFAllocatorRef allocator, 
      * Creates a UUID from a unique "name" in the given "name space".  See version 3 UUID.
      */
 
-    MD5_CTX     md5c;
+    CC_MD5_CTX  md5c;
     CFUUIDBytes uuid;
 
-    assert( sizeof( uuid ) == MD5_DIGEST_LENGTH );
+    assert( sizeof( uuid ) == CC_MD5_DIGEST_LENGTH );
 
     uuid = CFUUIDGetUUIDBytes( space );
 
-    MD5_Init( &md5c );
-    MD5_Update( &md5c, &uuid, sizeof( uuid ) );
-    MD5_Update( &md5c, CFDataGetBytePtr( name ), CFDataGetLength( name ) );
-    MD5_Final( ( void * ) &uuid, &md5c );
+    CC_MD5_Init( &md5c );
+    CC_MD5_Update( &md5c, &uuid, sizeof( uuid ) );
+    CC_MD5_Update( &md5c, CFDataGetBytePtr( name ), CFDataGetLength( name ) );
+    CC_MD5_Final( ( void * ) &uuid, &md5c );
 
     uuid.byte6 = 0x30 | ( uuid.byte6 & 0x0F );
     uuid.byte8 = 0x80 | ( uuid.byte8 & 0x3F );
@@ -570,4 +627,74 @@ __private_extern__ void ___DADisplayUpdateActivity( void )
             IOHIDPostEvent( port, NX_NULLEVENT, location, &data, 0, 0, 0 );
         }
     }
+}
+
+__private_extern__ kern_return_t ___IORegistryEntryGetPath( io_registry_entry_t entry, const io_name_t plane, ___io_path_t path )
+{
+    /*
+     * Create a path for a registry entry.
+     */
+
+    IOReturn status;
+
+    status = IORegistryEntryGetPath( entry, plane, path );
+
+    if ( status == kIOReturnBadArgument )
+    {
+        io_registry_entry_t parent;
+
+        status = IORegistryEntryGetParentEntry( entry, plane, &parent );
+
+        if ( status == kIOReturnSuccess )
+        {
+            status = ___IORegistryEntryGetPath( parent, plane, path );
+
+            if ( status == kIOReturnSuccess )
+            {
+                io_name_t name;
+
+                status = IORegistryEntryGetNameInPlane( entry, plane, name );
+
+                if ( status == kIOReturnSuccess )
+                {
+                    io_name_t location;
+
+                    status = IORegistryEntryGetLocationInPlane( entry, plane, location );
+
+                    if ( status == kIOReturnSuccess )
+                    {
+                        if ( strlen( path ) + strlen( "/" ) + strlen( name ) + strlen( "@" ) + strlen( location ) < sizeof( ___io_path_t ) )
+                        {
+                            strcat( path, "/" );
+                            strcat( path, name );
+                            strcat( path, "@" );
+                            strcat( path, location );
+                        }
+                        else
+                        {
+                            status = kIOReturnBadArgument;
+                        }
+                    }
+                    else
+                    {
+                        if ( strlen( path ) + strlen( "/" ) + strlen( name ) < sizeof( ___io_path_t ) )
+                        {
+                            strcat( path, "/" );
+                            strcat( path, name );
+
+                            status = kIOReturnSuccess;
+                        }
+                        else
+                        {
+                            status = kIOReturnBadArgument;
+                        }
+                    }
+                }
+            }
+
+            IOObjectRelease( parent );
+        }
+    }
+
+    return status;
 }
