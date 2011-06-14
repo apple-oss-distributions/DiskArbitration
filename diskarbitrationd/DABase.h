@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998-2009 Apple Inc. All Rights Reserved.
+ * Copyright (c) 1998-2011 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -45,12 +45,13 @@ __private_extern__ int             ___isautofs( const char * path );
 __private_extern__ int             ___mkdir( const char * path, mode_t mode );
 __private_extern__ void            ___vproc_transaction_begin( void );
 __private_extern__ void            ___vproc_transaction_end( void );
+__private_extern__ const void *    ___CFArrayGetValue( CFArrayRef array, const void * value );
 __private_extern__ void            ___CFArrayIntersect( CFMutableArrayRef array1, CFArrayRef array2 );
 __private_extern__ CFStringRef     ___CFBundleCopyLocalizedStringInDirectory( CFURLRef bundleURL, CFStringRef key, CFStringRef value, CFStringRef table );
 __private_extern__ CFURLRef        ___CFBundleCopyResourceURLInDirectory( CFURLRef bundleURL, CFStringRef resourcePath );
 __private_extern__ CFDataRef       ___CFDataCreateFromString( CFAllocatorRef allocator, CFStringRef string );
 __private_extern__ CFDictionaryRef ___CFDictionaryCreateFromXMLString( CFAllocatorRef allocator, CFStringRef string );
-__private_extern__ CFTypeRef       ___CFDictionaryGetAnyValue( CFDictionaryRef dictionary );
+__private_extern__ const void *    ___CFDictionaryGetAnyValue( CFDictionaryRef dictionary );
 __private_extern__ char *          ___CFStringCreateCStringWithFormatAndArguments( const char * format, va_list arguments );
 __private_extern__ Boolean         ___CFStringGetCString( CFStringRef string, char * buffer, CFIndex length );
 __private_extern__ void            ___CFStringInsertFormat( CFMutableStringRef string, CFIndex index, CFStringRef format, ... );
@@ -59,7 +60,6 @@ __private_extern__ void            ___CFStringPad( CFMutableStringRef string, CF
 __private_extern__ CFUUIDRef       ___CFUUIDCreateFromName( CFAllocatorRef allocator, CFUUIDRef space, CFDataRef name );
 __private_extern__ CFUUIDRef       ___CFUUIDCreateFromString( CFAllocatorRef allocator, CFStringRef string );
 __private_extern__ CFStringRef     ___CFURLCopyRawDeviceFileSystemPath( CFURLRef url, CFURLPathStyle pathStyle );
-__private_extern__ void            ___DADisplayUpdateActivity( void );
 __private_extern__ kern_return_t   ___IORegistryEntryGetPath( io_registry_entry_t entry, const io_name_t plane, ___io_path_t path );
 
 #ifdef __cplusplus
