@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998-2012 Apple Inc. All rights reserved.
+ * Copyright (c) 1998-2013 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -141,36 +141,13 @@ static void __DASessionDeallocate( CFTypeRef object )
 {
     DASessionRef session = ( DASessionRef ) object;
 
+    assert( session->_client  == NULL );
+    assert( session->_source  == NULL );
+    assert( session->_source2 == NULL );
+
     if ( session->_authorization )  AuthorizationFree( session->_authorization, kAuthorizationFlagDefaults );
     if ( session->_name          )  free( session->_name );
     if ( session->_server        )  mach_port_deallocate( mach_task_self( ), session->_server );
-
-    if ( session->_source2 )
-    {
-        dispatch_source_cancel( session->_source2 );
-
-        dispatch_release( session->_source2 );
-    }
-
-    if ( session->_source )
-    {
-        CFRunLoopSourceInvalidate( session->_source );
-
-        CFRelease( session->_source );
-    }
-
-    if ( session->_client )
-    {
-        mach_port_t clientPort;
-
-        clientPort = CFMachPortGetPort( session->_client );
-
-        CFMachPortInvalidate( session->_client );
-
-        CFRelease( session->_client );
-
-        mach_port_mod_refs( mach_task_self( ), clientPort, MACH_PORT_RIGHT_RECEIVE, -1 );
-    }
 }
 
 static Boolean __DASessionEqual( CFTypeRef object1, CFTypeRef object2 )
@@ -239,23 +216,6 @@ __private_extern__ void _DASessionCallback( CFMachPortRef port, void * message, 
 
         vm_deallocate( mach_task_self( ), _queue, _queueSize );
     }
-}
-
-__private_extern__ void _DASessionCancelCallback( void * context )
-{
-    DASessionRef session = context;
-
-    CFRelease( session );
-}
-
-__private_extern__ void _DASessionEventCallback( void * context )
-{
-    mach_msg_empty_rcv_t message;
-    DASessionRef         session = context;
-
-    mach_msg( ( void * ) &message, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof( message ), CFMachPortGetPort( session->_client ), 0, MACH_PORT_NULL );
-
-    _DASessionCallback( NULL, NULL, 0, session );
 }
 
 __private_extern__ AuthorizationRef _DASessionGetAuthorization( DASessionRef session )
@@ -343,69 +303,65 @@ __private_extern__ void _DASessionScheduleWithRunLoop( DASessionRef session )
         mach_port_t   clientPort;
         kern_return_t status;
 
+        /*
+         * Create the session's client port.
+         */
+
         status = mach_port_allocate( mach_task_self( ), MACH_PORT_RIGHT_RECEIVE, &clientPort );
 
         if ( status == KERN_SUCCESS )
         {
-            CFMachPortRef     client;
-            CFMachPortContext clientContext;
+            mach_port_limits_t limits = { 0 };
 
-            clientContext.version         = 0;
-            clientContext.info            = session;
-            clientContext.retain          = CFRetain;
-            clientContext.release         = CFRelease;
-            clientContext.copyDescription = NULL;
+            limits.mpl_qlimit = 1;
 
             /*
-             * Create the session's client port.
+             * Set up the session's client port.  It requires no more than one queue element.
              */
 
-            client = CFMachPortCreateWithPort( CFGetAllocator( session ), clientPort, _DASessionCallback, &clientContext, NULL );
+            status = mach_port_set_attributes( mach_task_self( ),
+                                               clientPort,
+                                               MACH_PORT_LIMITS_INFO,
+                                               ( mach_port_info_t ) &limits,
+                                               MACH_PORT_LIMITS_INFO_COUNT );
 
-            if ( client )
+            if ( status == KERN_SUCCESS )
             {
-                CFRunLoopSourceRef source;
+                CFMachPortRef     client;
+                CFMachPortContext clientContext;
+
+                clientContext.version         = 0;
+                clientContext.info            = session;
+                clientContext.retain          = CFRetain;
+                clientContext.release         = CFRelease;
+                clientContext.copyDescription = NULL;
 
                 /*
                  * Create the session's client port run loop source.
                  */
 
-                source = CFMachPortCreateRunLoopSource( CFGetAllocator( session ), client, 0 );
+                client = CFMachPortCreateWithPort( CFGetAllocator( session ), clientPort, _DASessionCallback, &clientContext, NULL );
 
-                if ( source )
+                if ( client )
                 {
-                    mach_port_limits_t limits = { 0 };
+                    CFRunLoopSourceRef source;
 
-                    limits.mpl_qlimit = 1;
+                    source = CFMachPortCreateRunLoopSource( CFGetAllocator( session ), client, 0 );
 
-                    /*
-                     * Set up the session's client port.  It requires no more than one queue element.
-                     */
-
-                    status = mach_port_set_attributes( mach_task_self( ),
-                                                       CFMachPortGetPort( client ),
-                                                       MACH_PORT_LIMITS_INFO,
-                                                       ( mach_port_info_t ) &limits,
-                                                       MACH_PORT_LIMITS_INFO_COUNT );
-
-                    if ( status == KERN_SUCCESS )
+                    if ( source )
                     {
-                        _DAServerSessionSetClientPort( session->_server, CFMachPortGetPort( client ) );
-
                         session->_client = client;
                         session->_source = source;
+
+                        _DAServerSessionSetClientPort( session->_server, CFMachPortGetPort( client ) );
 
                         return;
                     }
 
-                    CFRunLoopSourceInvalidate( source );
+                    CFMachPortInvalidate( client );
 
-                    CFRelease( source );
+                    CFRelease( client );
                 }
-
-                CFMachPortInvalidate( client );
-
-                CFRelease( client );
             }
 
             mach_port_mod_refs( mach_task_self( ), clientPort, MACH_PORT_RIGHT_RECEIVE, -1 );
@@ -415,35 +371,35 @@ __private_extern__ void _DASessionScheduleWithRunLoop( DASessionRef session )
 
 __private_extern__ void _DASessionUnscheduleFromRunLoop( DASessionRef session )
 {
-    if ( session->_sourceCount )
+    if ( session->_sourceCount == 1 )
     {
-        if ( session->_sourceCount == 1 )
+        if ( session->_source )
         {
-            if ( session->_source )
-            {
-                CFRunLoopSourceInvalidate( session->_source );
+            CFRunLoopSourceInvalidate( session->_source );
 
-                CFRelease( session->_source );
+            CFRelease( session->_source );
 
-                session->_source = NULL;
-            }
-
-            if ( session->_client )
-            {
-                mach_port_t clientPort;
-
-                clientPort = CFMachPortGetPort( session->_client );
-
-                CFMachPortInvalidate( session->_client );
-
-                CFRelease( session->_client );
-
-                mach_port_mod_refs( mach_task_self( ), clientPort, MACH_PORT_RIGHT_RECEIVE, -1 );
-
-                session->_client = NULL;
-            }
+            session->_source = NULL;
         }
 
+        if ( session->_client )
+        {
+            mach_port_t clientPort;
+
+            clientPort = CFMachPortGetPort( session->_client );
+
+            CFMachPortInvalidate( session->_client );
+
+            CFRelease( session->_client );
+
+            mach_port_mod_refs( mach_task_self( ), clientPort, MACH_PORT_RIGHT_RECEIVE, -1 );
+
+            session->_client = NULL;
+        }
+    }
+
+    if ( session->_sourceCount )
+    {
         session->_sourceCount--;
     }
 }
@@ -556,50 +512,98 @@ CFTypeID DASessionGetTypeID( void )
 
 void DASessionScheduleWithRunLoop( DASessionRef session, CFRunLoopRef runLoop, CFStringRef runLoopMode )
 {
-    _DASessionScheduleWithRunLoop( session );
-
-    if ( session->_source )
+    if ( session )
     {
-        CFRunLoopAddSource( runLoop, session->_source, runLoopMode );
+        _DASessionScheduleWithRunLoop( session );
+
+        if ( session->_source )
+        {
+            CFRunLoopAddSource( runLoop, session->_source, runLoopMode );
+        }
     }
 }
 
 void DASessionSetDispatchQueue( DASessionRef session, dispatch_queue_t queue )
 {
-    if ( session->_source2 )
+    if ( session )
     {
-        dispatch_source_cancel( session->_source2 );
-
-        dispatch_release( session->_source2 );
-
-        session->_source2 = NULL;
-
-        _DASessionUnscheduleFromRunLoop( session );
-    }
-
-    if ( queue )
-    {
-        _DASessionScheduleWithRunLoop( session );
-
-        if ( session->_client )
+        if ( session->_source2 )
         {
-            session->_source2 = dispatch_source_create( DISPATCH_SOURCE_TYPE_MACH_RECV, CFMachPortGetPort( session->_client ), 0, queue );
+            dispatch_source_cancel( session->_source2 );
 
-            if ( session->_source2 )
+            dispatch_release( session->_source2 );
+
+            session->_source2 = NULL;
+        }
+
+        if ( queue )
+        {
+            mach_port_t   client;
+            kern_return_t status;
+
+            /*
+             * Create the session's client port.
+             */
+
+            status = mach_port_allocate( mach_task_self( ), MACH_PORT_RIGHT_RECEIVE, &client );
+
+            if ( status == KERN_SUCCESS )
             {
-                CFRetain( session );
+                mach_port_limits_t limits = { 0 };
 
-                dispatch_set_context( session->_source2, session );
+                limits.mpl_qlimit = 1;
 
-                dispatch_source_set_cancel_handler_f( session->_source2, _DASessionCancelCallback );
+                /*
+                 * Set up the session's client port.  It requires no more than one queue element.
+                 */
 
-                dispatch_source_set_event_handler_f( session->_source2, _DASessionEventCallback );
+                status = mach_port_set_attributes( mach_task_self( ),
+                                                   client,
+                                                   MACH_PORT_LIMITS_INFO,
+                                                   ( mach_port_info_t ) &limits,
+                                                   MACH_PORT_LIMITS_INFO_COUNT );
 
-                dispatch_resume( session->_source2 );
-            }
-            else
-            {
-                _DASessionUnscheduleFromRunLoop( session );
+                if ( status == KERN_SUCCESS )
+                {
+                    dispatch_source_t source;
+
+                    /*
+                     * Create the session's client port dispatch source.
+                     */
+
+                    source = dispatch_source_create( DISPATCH_SOURCE_TYPE_MACH_RECV, client, 0, queue );
+
+                    if ( source )
+                    {
+                        session->_source2 = source;
+
+                        CFRetain( session );
+
+                        dispatch_source_set_cancel_handler( session->_source2, ^
+                        {
+                            mach_port_mod_refs( mach_task_self( ), client, MACH_PORT_RIGHT_RECEIVE, -1 );
+
+                            CFRelease( session );
+                        } );
+
+                        dispatch_source_set_event_handler( session->_source2, ^
+                        {
+                            mach_msg_empty_rcv_t message;
+
+                            mach_msg( ( void * ) &message, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof( message ), client, 0, MACH_PORT_NULL );
+
+                            _DASessionCallback( NULL, NULL, 0, session );
+                        } );
+
+                        dispatch_resume( session->_source2 );
+
+                        _DAServerSessionSetClientPort( session->_server, client );
+
+                        return;
+                    }
+                }
+
+                mach_port_mod_refs( mach_task_self( ), client, MACH_PORT_RIGHT_RECEIVE, -1 );
             }
         }
     }
@@ -607,10 +611,13 @@ void DASessionSetDispatchQueue( DASessionRef session, dispatch_queue_t queue )
 
 void DASessionUnscheduleFromRunLoop( DASessionRef session, CFRunLoopRef runLoop, CFStringRef runLoopMode )
 {
-    if ( session->_source )
+    if ( session )
     {
-        CFRunLoopRemoveSource( runLoop, session->_source, runLoopMode );
-    }
+        if ( session->_source )
+        {
+            CFRunLoopRemoveSource( runLoop, session->_source, runLoopMode );
+        }
 
-    _DASessionUnscheduleFromRunLoop( session );
+        _DASessionUnscheduleFromRunLoop( session );
+    }
 }

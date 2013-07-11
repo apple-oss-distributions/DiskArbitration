@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998-2012 Apple Inc. All rights reserved.
+ * Copyright (c) 1998-2013 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -36,6 +36,8 @@ extern "C" {
 
 #define ___ATTR_INVISIBLE 0x4000
 
+#define ___EDIRTY EILSEQ
+
 #define ___PREFS_DEFAULT_DIR "/Library/Preferences/SystemConfiguration"
 
 typedef uint16_t ___attr_t;
@@ -43,7 +45,6 @@ typedef uint16_t ___attr_t;
 typedef char ___io_path_t[1024];
 
 __private_extern__ int             ___chattr( const char * path, ___attr_t attr, ___attr_t noattr );
-__private_extern__ int             ___initgroups( uid_t uid, gid_t basegid );
 __private_extern__ int             ___isautofs( const char * path );
 __private_extern__ int             ___mkdir( const char * path, mode_t mode );
 __private_extern__ void            ___vproc_transaction_begin( void );
