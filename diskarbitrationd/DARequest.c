@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998-2014 Apple Inc. All rights reserved.
+ * Copyright (c) 1998-2017 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -351,7 +351,7 @@ static Boolean __DARequestEject( DARequestRef request )
      * Commence the eject.
      */
 
-    if ( DAUnitGetState( disk, kDAUnitStateCommandActive ) == FALSE )
+    if ( DAUnitGetStateRecursively( disk, kDAUnitStateCommandActive ) == FALSE )
     {
         CFRetain( request );
 
@@ -507,49 +507,6 @@ static Boolean __DARequestMount( DARequestRef request )
             }
         }
 
-        /*
-         * Determine whether the mount point is accessible by the user.
-         */
-
-        if ( DADiskGetDescription( disk, kDADiskDescriptionVolumePathKey ) == NULL )
-        {
-            if ( DARequestGetUserUID( request ) )
-            {
-                CFTypeRef mountpoint;
-
-                mountpoint = DARequestGetArgument2( request );
-
-                if ( mountpoint )
-                {
-                    mountpoint = CFURLCreateWithString( kCFAllocatorDefault, mountpoint, NULL );
-                }
-
-                if ( mountpoint )
-                {
-                    char * path;
-
-                    path = ___CFURLCopyFileSystemRepresentation( mountpoint );
-
-                    if ( path )
-                    {
-                        struct stat st;
-
-                        if ( stat( path, &st ) == 0 )
-                        {
-                            if ( st.st_uid != DARequestGetUserUID( request ) )
-                            {
-                                status = kDAReturnNotPermitted;
-                            }
-                        }
-
-                        free( path );
-                    }
-
-                    CFRelease( mountpoint );
-                }
-            }
-        }
-
         if ( status )
         {
             DARequestDispatchCallback( request, status );
@@ -702,7 +659,7 @@ static Boolean __DARequestMount( DARequestRef request )
      * Commence the mount.
      */
 
-    if ( DAUnitGetState( disk, kDAUnitStateCommandActive ) == FALSE )
+    if ( DAUnitGetStateRecursively( disk, kDAUnitStateCommandActive ) == FALSE )
     {
         CFTypeRef path;
 
@@ -865,7 +822,7 @@ static Boolean __DARequestProbe( DARequestRef request )
         }
     }
 ///w:stop
-    if ( DAUnitGetState( disk, kDAUnitStateCommandActive ) == FALSE )
+    if ( DAUnitGetStateRecursively( disk, kDAUnitStateCommandActive ) == FALSE )
     {
         DAReturn status;
 
@@ -1003,7 +960,7 @@ static Boolean __DARequestRename( DARequestRef request )
      * Commence the rename.
      */
 
-    if ( DAUnitGetState( disk, kDAUnitStateCommandActive ) == FALSE )
+    if ( DAUnitGetStateRecursively( disk, kDAUnitStateCommandActive ) == FALSE )
     {
         DAReturn status;
 
@@ -1318,7 +1275,7 @@ static Boolean __DARequestUnmount( DARequestRef request )
      * Commence the unmount.
      */
 
-    if ( DAUnitGetState( disk, kDAUnitStateCommandActive ) == FALSE )
+    if ( DAUnitGetStateRecursively( disk, kDAUnitStateCommandActive ) == FALSE )
     {
         DADiskUnmountOptions options;
 
