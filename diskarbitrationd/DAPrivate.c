@@ -187,6 +187,44 @@ DAReturn _DADiskRefresh( DADiskRef disk )
                     }
                 }
 ///w:stop
+                /*
+                 * volume name and mountpoint could change asynchronously depending on the filesystem implementation
+                 * update the name and mountpoint if they have changed
+                 */
+                CFURLRef path;
+                path = CFURLCreateFromFileSystemRepresentation( kCFAllocatorDefault,
+                                                                ( void * ) mountList[mountListIndex].f_mntonname,
+                                                                strlen( mountList[mountListIndex].f_mntonname ),
+                                                                TRUE );
+                if ( path )
+                {
+                    if ( DADiskCompareDescription( disk, kDADiskDescriptionVolumePathKey, path ) )
+                    {
+                        DADiskSetBypath( disk, path );
+
+                        DADiskSetDescription( disk, kDADiskDescriptionVolumePathKey, path );
+
+                        DALogDebug( " volume path changed for %@", disk);
+
+                        CFArrayAppendValue( keys, kDADiskDescriptionVolumePathKey );
+                    }
+
+                    CFStringRef name = _DAFileSystemCopyName( DADiskGetFileSystem( disk ), path );
+
+                    if ( name )
+                    {
+                        if ( DADiskCompareDescription( disk, kDADiskDescriptionVolumeNameKey, name ) )
+                        {
+                            DALogDebug( " volume name changed for %@", disk);
+
+                            DADiskSetDescription( disk, kDADiskDescriptionVolumeNameKey, name );
+
+                            CFArrayAppendValue( keys, kDADiskDescriptionVolumeNameKey );
+                        }
+                        CFRelease( name );
+                    }
+                    CFRelease( path );
+                }
 
                 if ( CFArrayGetCount( keys ) )
                 {
@@ -363,75 +401,27 @@ _DADiskSetEncodingErr:
     return status;
 }
 
-DADiskRef _DAUnitGetParentUnit( DADiskRef disk )
+errno_t _DADiskGetEncryptionStatus( CFAllocatorRef allocator, DADiskRef disk, CFBooleanRef *encryption_status, CFNumberRef *encryption_details )
 {
-    io_service_t media;
+    bool encrypted;
+    UInt32 detail;
+    errno_t error;
 
-    media = DADiskGetIOMedia( disk );
+    error = _FSGetMediaEncryptionStatusAtPath( DADiskGetBSDPath(disk, FALSE), &encrypted, &detail );
 
-    if ( media )
+    if ( error == 0 )
     {
-        IOObjectRetain( media );
-
-        while ( media )
+        if ( encryption_status )
         {
-            io_service_t parent = IO_OBJECT_NULL;
-
-            if ( IOObjectConformsTo( media, kIOMediaClass ) )
-            {
-                CFNumberRef key;
-
-                key = IORegistryEntryCreateCFProperty( media, CFSTR( kIOBSDUnitKey ), CFGetAllocator( disk ), 0 );
-
-                if ( key )
-                {
-                    if ( CFEqual( DADiskGetDescription( disk, kDADiskDescriptionMediaBSDUnitKey ), key ) == FALSE )
-                    {
-                        CFRelease( key );
-
-                        break;
-                    }
-
-                    CFRelease( key );
-                }
-            }
-
-            IORegistryEntryGetParentEntry( media, kIOServicePlane, &parent );
-
-            IOObjectRelease( media );
-
-            media = parent;
+             *encryption_status = encrypted ? kCFBooleanTrue : kCFBooleanFalse;
+        }
+        if ( encryption_details )
+        {
+            *encryption_details = CFNumberCreate( allocator, kCFNumberSInt32Type, &detail);
         }
     }
 
-    disk = NULL;
-
-    if ( media )
-    {
-        CFIndex count;
-        CFIndex index;
-
-        count = CFArrayGetCount( gDADiskList );
-
-        for ( index = 0; index < count; index++ )
-        {
-            disk = ( void * ) CFArrayGetValueAtIndex( gDADiskList, index );
-
-            if ( IOObjectIsEqualTo( DADiskGetIOMedia( disk ), media ) )
-            {
-                break;
-            }
-        }
-
-        if ( index == count )
-        {
-            disk = NULL;
-        }
-
-        IOObjectRelease( media );
-    }
-
-    return disk;
+    return error;
 }
 
 Boolean _DAUnitIsUnreadable( DADiskRef disk )

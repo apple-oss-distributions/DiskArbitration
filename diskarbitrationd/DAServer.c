@@ -47,7 +47,37 @@
 #include <IOKit/IOMessage.h>
 #include <IOKit/storage/IOMedia.h>
 ///w:start
+#include <dlfcn.h>
+#include <IOKit/storage/CoreStorage/CoreStorageUserLib.h>
 #include <SystemConfiguration/SCDynamicStoreCopySpecificPrivate.h>
+///w:end
+
+///w:start
+// Dynamic load libCoreStorage.dylib
+static CFMutableDictionaryRef (*__CoreStorageCopyVolumeProperties)( CoreStorageLogicalRef volRef ) = NULL;
+static bool (*__CoreStorageLockFamily)( CoreStorageFamilyRef lvfRef ) = NULL;
+static void *__hlibCoreStorage = NULL;
+
+static void __CoreStorage_init() __attribute__((constructor));
+static void __CoreStorage_exit() __attribute__((destructor));
+
+void __CoreStorage_init()
+{
+    __hlibCoreStorage = dlopen("libCoreStorage.dylib", RTLD_LAZY);
+    if ( __hlibCoreStorage )
+    {
+        *(void **)( &__CoreStorageCopyVolumeProperties ) = dlsym( __hlibCoreStorage, "CoreStorageCopyVolumeProperties" );
+        *(void **)( &__CoreStorageLockFamily )           = dlsym( __hlibCoreStorage, "CoreStorageLockFamily" );
+    }
+}
+
+void __CoreStorage_exit()
+{
+    if ( __hlibCoreStorage )
+    {
+        dlclose( __hlibCoreStorage );
+    }
+}
 ///w:end
 
 static CFMachPortRef       __gDAServer      = NULL;
@@ -163,6 +193,73 @@ static void __DAMediaPropertyChangedCallback( void * context, io_service_t servi
 
             if ( properties )
             {
+                if ( DADiskGetState( disk, kDADiskStateCommandActive ) == FALSE )
+                {
+                    CFURLRef path;
+
+                    /*
+                     * volume name can be changed asynchronously depending on the underlying filesystem implementation.
+                     * if the name has changed, try to move the mountpoint
+                     */
+                    path = DADiskGetDescription( disk, kDADiskDescriptionVolumePathKey );
+                    struct statfs * mountList;
+                    int             mountListCount;
+                    int             mountListIndex;
+                    
+                    mountListCount = getmntinfo( &mountList, MNT_NOWAIT );
+
+                    for ( mountListIndex = 0; mountListIndex < mountListCount; mountListIndex++ )
+                    {
+                        if ( strcmp( _DAVolumeGetID( mountList + mountListIndex ), DADiskGetID( disk ) ) == 0 )
+                        {
+                            break;
+                        }
+                    }
+
+                    if ( path && (mountListIndex != mountListCount) )
+                    {
+                        CFStringRef name = _DAFileSystemCopyName( DADiskGetFileSystem( disk ), path );
+                        if ( name )
+                        {
+                            if ( DADiskCompareDescription( disk, kDADiskDescriptionVolumeNameKey, name ) )
+                            {
+                                DALogDebug( " volume name changed for %@ ", disk);
+                                DADiskSetDescription( disk, kDADiskDescriptionVolumeNameKey, name );
+
+                                CFArrayAppendValue( keys, kDADiskDescriptionVolumeNameKey );
+                                CFURLRef mountpoint;
+                                if ( CFEqual( CFURLGetString( path ), CFSTR( "file:///" ) ) )
+                                {
+                                    mountpoint = DAMountCreateMountPointWithAction( disk, kDAMountPointActionMove );
+
+                                    if ( mountpoint )
+                                    {
+                                        DADiskSetBypath( disk, mountpoint );
+
+                                        CFRelease( mountpoint );
+                                    }
+                                }
+                                else
+                                {
+                                    mountpoint = DAMountCreateMountPointWithAction( disk, kDAMountPointActionMove );
+
+                                    if ( mountpoint )
+                                    {
+                                        DADiskSetBypath( disk, mountpoint );
+
+                                        DADiskSetDescription( disk, kDADiskDescriptionVolumePathKey, mountpoint );
+
+                                        CFArrayAppendValue( keys, kDADiskDescriptionVolumePathKey );
+
+                                        CFRelease( mountpoint );
+                                    }
+                                }
+                            }
+                            CFRelease( name );
+                        }
+                    }
+               }
+
                 CFTypeRef object;
 
                 object = CFDictionaryGetValue( properties, CFSTR( kIOMediaContentKey ) );
@@ -237,6 +334,49 @@ static void __DAMediaPropertyChangedCallback( void * context, io_service_t servi
                     CFArrayAppendValue( keys, kDADiskDescriptionMediaWritableKey );
                 }
 
+                {
+                    CFBooleanRef encrypted = NULL;
+                    CFNumberRef  encryptionDetail = NULL;
+
+                    _DADiskGetEncryptionStatus( kCFAllocatorDefault, disk, &encrypted, &encryptionDetail );
+
+                    if ( DADiskCompareDescription( disk, kDADiskDescriptionMediaEncryptedKey, encrypted ) )
+                    {
+                        DADiskSetDescription( disk, kDADiskDescriptionMediaEncryptedKey, encrypted );
+
+                        CFArrayAppendValue( keys, kDADiskDescriptionMediaEncryptedKey );
+                    }
+
+                    if ( DADiskCompareDescription( disk, kDADiskDescriptionMediaEncryptionDetailKey, encryptionDetail ) )
+                    {
+                        DADiskSetDescription( disk, kDADiskDescriptionMediaEncryptionDetailKey, encryptionDetail );
+
+                        CFArrayAppendValue( keys, kDADiskDescriptionMediaEncryptionDetailKey );
+                    }
+
+                    if ( encryptionDetail )
+                    {
+                        CFRelease ( encryptionDetail );
+                    }
+                }
+
+                object = IORegistryEntrySearchCFProperty( service,
+                                                          kIOServicePlane,
+                                                          CFSTR( "AppleTDMLocked" ),
+                                                          kCFAllocatorDefault,
+                                                          kIORegistryIterateParents | kIORegistryIterateRecursively );
+
+                if ( DADiskCompareDescription( disk, kDADiskDescriptionDeviceTDMLockedKey, object ) )
+                {
+                    DADiskSetDescription( disk, kDADiskDescriptionDeviceTDMLockedKey, object );
+                    CFArrayAppendValue( keys, kDADiskDescriptionDeviceTDMLockedKey );
+                }
+
+                if ( object )
+                {
+                    CFRelease ( object );
+                }
+
                 if ( CFArrayGetCount( keys ) )
                 {
                     DALogDebugHeader( "iokit [0] -> %s", gDAProcessNameID );
@@ -278,6 +418,7 @@ static DASessionRef __DASessionListGetSession( mach_port_t sessionID )
 
     return NULL;
 }
+
 
 void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void * info )
 {
@@ -583,13 +724,47 @@ void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void 
             if ( DADiskGetDescription( disk, kDADiskDescriptionVolumeMountableKey ) == kCFBooleanTrue )
             {
                 Boolean unmount;
-
+///w:start
+                CFStringRef lvfUUID = NULL;
+///w:stop
                 unmount = FALSE;
 
                 if ( DAMountGetPreference( disk, kDAMountPreferenceDefer ) )
                 {
                     if ( DADiskGetState( disk, _kDADiskStateMountAutomaticNoDefer ) == FALSE )
                     {
+
+///w:start
+                        CFMutableDictionaryRef lvProps = NULL;
+                        CFStringRef lvUUID = NULL;
+                        CFBooleanRef encrypted = DADiskGetDescription( disk, kDADiskDescriptionMediaEncryptedKey );
+                        CFTypeRef object = DADiskGetDescription( disk, kDADiskDescriptionMediaUUIDKey );
+
+                        if ( ( object ) && ( encrypted == kCFBooleanTrue ) )
+                        {
+                            lvUUID = CFUUIDCreateString( kCFAllocatorDefault , object );
+                        }
+
+                        if ( lvUUID != NULL )
+                        {
+                            if ( __CoreStorageCopyVolumeProperties != NULL )
+                            {
+                                lvProps = __CoreStorageCopyVolumeProperties( (CoreStorageLogicalRef)lvUUID );
+                            }
+                            CFRelease( lvUUID );
+                        }
+
+                        if (lvProps )
+                        {
+                            lvfUUID = CFDictionaryGetValue( lvProps, CFSTR( kCoreStorageLogicalFamilyUUIDKey ) );
+                            if ( lvfUUID )
+                            {
+                                CFRetain( lvfUUID );
+                            }
+                            CFRelease( lvProps );
+
+                        }
+///w:stop
                         unmount = TRUE;
                     }
                 }
@@ -597,6 +772,18 @@ void _DAConfigurationCallback( SCDynamicStoreRef session, CFArrayRef keys, void 
                 if ( unmount )
                 {
                     DADiskUnmount( disk, kDADiskUnmountOptionDefault, NULL );
+
+///w:start
+                    if ( lvfUUID )
+                    {
+                        if ( __CoreStorageLockFamily != NULL )
+                        {
+                            __CoreStorageLockFamily( (CoreStorageFamilyRef)lvfUUID );
+                        }
+                        CFRelease( lvfUUID );
+                    }
+///w:stop
+
                 }
             }
         }
@@ -827,20 +1014,6 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
                 if ( DAUnitGetState( disk, kDAUnitStateHasQuiescedNoTimeout ) )
                 {
                     DADiskSetState( disk, kDADiskStateStagedMount, TRUE );
-                }
-                else
-                {
-                    DADiskRef unit;
-
-                    unit = _DAUnitGetParentUnit( disk );
-
-                    if ( unit )
-                    {
-                        if ( DAUnitGetState( unit, kDAUnitStateHasQuiescedNoTimeout ) )
-                        {
-                            DADiskSetState( disk, kDADiskStateStagedMount, TRUE );
-                        }
-                    }
                 }
 ///w:23678897:start
                 }
@@ -1683,6 +1856,24 @@ kern_return_t _DAServerSessionQueueRequest( mach_port_t            _session,
 
                             if ( status == 0 )
                             {
+                                CFStringRef content;
+
+                                content = DADiskGetDescription( disk, kDADiskDescriptionMediaContentKey );
+
+                                if ( CFEqual( content, CFSTR( "C12A7328-F81F-11D2-BA4B-00A0C93EC93B" ) ) )
+                                {
+                                    if ( audit_token_to_euid( _token ) )
+                                    {
+                                        if ( audit_token_to_euid( _token ) != DADiskGetUserUID( disk ) )
+                                        {
+                                            status = kDAReturnNotPermitted;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if ( status == 0 )
+                            {
                                 CFTypeRef mountpoint;
 
                                 mountpoint = argument2;
@@ -1700,11 +1891,11 @@ kern_return_t _DAServerSessionQueueRequest( mach_port_t            _session,
 
                                     if ( path )
                                     {
-                                        status = sandbox_check( audit_token_to_pid( _token ), "file-mount", SANDBOX_FILTER_PATH, path );
+                                        status = sandbox_check_by_audit_token(_token, "file-mount", SANDBOX_FILTER_PATH, path);
 
                                         if ( status )
                                         {
-                                            status = kDAReturnNotPermitted;
+                                            status = kDAReturnNotPrivileged;
                                         }
 
                                         free( path );
@@ -1712,9 +1903,9 @@ kern_return_t _DAServerSessionQueueRequest( mach_port_t            _session,
 
                                     if ( audit_token_to_euid( _token ) )
                                     {
-                                        if ( audit_token_to_euid( _token ) != DADiskGetUserUID( disk ))
+                                        if ( audit_token_to_euid( _token ) != DADiskGetUserUID( disk ) )
                                         {
-                                            status = kDAReturnNotPermitted;
+                                            status = kDAReturnNotPrivileged;
                                         }
                                     }
 
