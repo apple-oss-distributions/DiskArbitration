@@ -49,6 +49,16 @@ __private_extern__ AuthorizationRef _DASessionGetAuthorization( DASessionRef ses
 __private_extern__ mach_port_t      _DASessionGetID( DASessionRef session );
 __private_extern__ void             _DASessionInitialize( void );
 
+/*
+ * Helper functions used by framework for storing callback information in the session's register dictionary
+ *
+ */
+__private_extern__ CFMutableDictionaryRef DACallbackCreate( CFAllocatorRef   allocator, mach_vm_offset_t address, mach_vm_offset_t context);
+__private_extern__ SInt32 DAAddCallbackToSession(DASessionRef session, CFMutableDictionaryRef callback);
+__private_extern__ void DARemoveCallbackFromSessionWithKey(DASessionRef session, SInt32 index);
+__private_extern__ SInt32 DARemoveCallbackFromSession(DASessionRef session, mach_vm_offset_t address, mach_vm_offset_t context);
+__private_extern__ CFMutableDictionaryRef DAGetCallbackFromSession(DASessionRef session, SInt32 index);
+
 static void __DAInitialize( void )
 {
     CFMutableDictionaryRef match;
@@ -164,7 +174,7 @@ static DAReturn __DAQueueRequest( DASessionRef   session,
         SInt32 index = DAAddCallbackToSession(session, callback);
         CFRelease(callback);
         status = _DAServerSessionQueueRequest( _DASessionGetID( session ),
-                                               ( int32_t                ) kind,
+                                               ( uint32_t                ) kind,
                                                ( caddr_t                ) _DADiskGetID( argument0 ),
                                                ( int32_t                ) argument1,
                                                ( vm_address_t           ) ( _argument2 ? CFDataGetBytePtr( _argument2 ) : 0 ),
@@ -196,7 +206,7 @@ static void __DAQueueResponse( DASessionRef    session,
     _DAServerSessionQueueResponse( _DASessionGetID( session ),
                                    ( uintptr_t              ) address,
                                    ( uintptr_t              ) context,
-                                   ( int32_t                ) kind,
+                                   ( uint32_t                ) kind,
                                    ( caddr_t                ) _DADiskGetID( disk ),
                                    ( vm_address_t           ) ( _response ? CFDataGetBytePtr( _response ) : 0 ),
                                    ( mach_msg_type_number_t ) ( _response ? CFDataGetLength(  _response ) : 0 ),
@@ -471,6 +481,13 @@ __private_extern__ void _DADispatchCallback( DASessionRef    session,
 
             break;
         }
+       case _kDADiskListCompleteCallback:
+       {
+            ( ( DADiskListCompleteCallback ) address )( context );
+
+            break;
+       }
+
     }
 
     if ( response )
@@ -541,7 +558,7 @@ __private_extern__ void _DARegisterCallback( DASessionRef    session,
         _DAServerSessionRegisterCallback( _DASessionGetID( session ),
                                           ( uintptr_t              ) index,
                                           ( uintptr_t              ) index,
-                                          ( int32_t                ) kind,
+                                          ( uint32_t                ) kind,
                                           ( int32_t                ) order,
                                           ( vm_address_t           ) ( _match ? CFDataGetBytePtr( _match ) : 0 ),
                                           ( mach_msg_type_number_t ) ( _match ? CFDataGetLength(  _match ) : 0 ),

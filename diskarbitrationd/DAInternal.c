@@ -125,7 +125,8 @@ static const char * __kDAKindNameList[] =
     "disk rename",
     "disk unmount",
     "disk unmount approval",
-    "idle"
+    "idle",
+    "disk list complete"
 };
 
 extern CFIndex __CFBinaryPlistWriteToStream( CFPropertyListRef plist, CFTypeRef stream );
@@ -316,12 +317,29 @@ __private_extern__ char * ___CFURLCopyFileSystemRepresentation( CFURLRef url )
 
 __private_extern__ const char * _DACallbackKindGetName( _DACallbackKind kind )
 {
-    return __kDAKindNameList[kind];
+    const char * unknownKind = "Unknown Kind";
+    if ( _kDADiskLastKind >= kind )
+    {
+    	return __kDAKindNameList[kind];
+    }
+    else
+    {
+        return unknownKind;
+    }
 }
 
 __private_extern__ const char * _DARequestKindGetName( _DARequestKind kind )
 {
-    return __kDAKindNameList[kind];
+    const char * unknownKind = "Unknown Kind";
+    if ( _kDADiskLastKind >= kind )
+    {
+        return __kDAKindNameList[kind];
+    }
+    else
+    {
+        return unknownKind;
+    }
+
 }
 
 __private_extern__ CFDataRef _DASerialize( CFAllocatorRef allocator, CFTypeRef object )
