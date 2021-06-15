@@ -30,6 +30,7 @@
 #include "DAQueue.h"
 #include "DAStage.h"
 #include "DAThread.h"
+#include "DASupport.h"
 
 #include <sysexits.h>
 #include <unistd.h>
@@ -209,50 +210,54 @@ DAReturn _DADiskRefresh( DADiskRef disk )
                         CFArrayAppendValue( keys, kDADiskDescriptionVolumePathKey );
                     }
 
-                    CFStringRef name = _DAFileSystemCopyName( DADiskGetFileSystem( disk ), path );
-
-                    if ( name )
+                    if ( DAUnitGetState( disk, _kDAUnitStateHasAPFS ) )
                     {
-                        if ( DADiskCompareDescription( disk, kDADiskDescriptionVolumeNameKey, name ) )
-                        {
-                            DALogDebug( " volume name changed for %@", disk);
 
-                            DADiskSetDescription( disk, kDADiskDescriptionVolumeNameKey, name );
+                        CFStringRef name = _DAFileSystemCopyName( DADiskGetFileSystem( disk ), path );
 
-                            CFArrayAppendValue( keys, kDADiskDescriptionVolumeNameKey );
-
-                            if ( DADiskGetDescription( disk, kDADiskDescriptionMediaPathKey ) )
+                            if ( name )
                             {
-                                CFURLRef mountpoint;
-                                if ( CFEqual( CFURLGetString( path ), CFSTR( "file:///" ) ) )
+                                if ( DADiskCompareDescription( disk, kDADiskDescriptionVolumeNameKey, name ) )
                                 {
-                                    mountpoint = DAMountCreateMountPointWithAction( disk, kDAMountPointActionMove );
+                                    DALogDebug( " volume name changed for %@", disk);
 
-                                    if ( mountpoint )
+                                    DADiskSetDescription( disk, kDADiskDescriptionVolumeNameKey, name );
+
+                                    CFArrayAppendValue( keys, kDADiskDescriptionVolumeNameKey );
+
+                                    if ( DADiskGetDescription( disk, kDADiskDescriptionMediaPathKey ) )
                                     {
-                                        DADiskSetBypath( disk, mountpoint );
+                                        CFURLRef mountpoint;
+                                        if ( CFEqual( CFURLGetString( path ), CFSTR( "file:///" ) ) )
+                                        {
+                                            mountpoint = DAMountCreateMountPointWithAction( disk, kDAMountPointActionMove );
 
-                                        CFRelease( mountpoint );
+                                            if ( mountpoint )
+                                            {
+                                                DADiskSetBypath( disk, mountpoint );
+
+                                                CFRelease( mountpoint );
+                                            }
+                                        }
+                                        else
+                                        {
+                                            mountpoint = DAMountCreateMountPointWithAction( disk, kDAMountPointActionMove );
+
+                                            if ( mountpoint )
+                                            {
+                                                DADiskSetBypath( disk, mountpoint );
+
+                                                DADiskSetDescription( disk, kDADiskDescriptionVolumePathKey, mountpoint );
+
+                                                CFArrayAppendValue( keys, kDADiskDescriptionVolumePathKey );
+
+                                                CFRelease( mountpoint );
+                                            }
+                                        }
                                     }
                                 }
-                                else
-                                {
-                                    mountpoint = DAMountCreateMountPointWithAction( disk, kDAMountPointActionMove );
-
-                                    if ( mountpoint )
-                                    {
-                                        DADiskSetBypath( disk, mountpoint );
-
-                                        DADiskSetDescription( disk, kDADiskDescriptionVolumePathKey, mountpoint );
-
-                                        CFArrayAppendValue( keys, kDADiskDescriptionVolumePathKey );
-
-                                        CFRelease( mountpoint );
-                                    }
-                                }
+                                CFRelease( name );
                             }
-                        }
-                        CFRelease( name );
                     }
                     CFRelease( path );
                 }
