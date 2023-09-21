@@ -30,7 +30,7 @@
 #import <UserFS/LiveFSUSBLocalStorageClient.h>
 #import <LiveFS/LiveFSMountManagerClient.h>
 #import <LiveFS/LiveFS_LiveFileMounter.h>
-
+#import <os/log.h>
 
 
 int __DAMountUserFSVolume( void * parameter )
@@ -48,12 +48,22 @@ int __DAMountUserFSVolume( void * parameter )
     NSString *volumeName   = (__bridge NSString *)context->volumeName;
     NSString *mountOptions = (__bridge NSString *)context->mountOptions;
 
+    if ( [fsType hasSuffix:@"_fskit"] )
+    {
+        /*
+         * Remove the _fskit suffix from the fs type.
+         */
+        fsType = [fsType substringToIndex:
+                  [fsType rangeOfCharacterFromSet:
+                   [NSCharacterSet characterSetWithCharactersInString:@"_"]].location];
+    }
+    
     userFSManager = [LiveFSUSBLocalStorageClient newManager];
     mountClient = [LiveFSMountClient  newClientForProvider:@"com.apple.filesystems.UserFS.FileProvider"];
 
     volumes = [userFSManager loadVolumes:deviceName ofType:fsType withError:&err];
 
-    if (err)
+    if ( err )
     {
         DALogError("%@ loadVolumes failed with %@", deviceName, err);
         goto exit;
@@ -116,6 +126,17 @@ int __DAMountUserFSVolume( void * parameter )
             NSString *UUID = [volumeInfo objectForKey:(@"UUID")];
             NSString *volName = [volumeInfo objectForKey:(@"name")];
 
+            /* There are file systems which return a volume name during probe, but not during scanvols,
+             * and vice versa, in case of probe finding a name and scanvols not finding the name we
+             * prefer probed name
+             */
+            if (volumeName != nil && ![volumeName isEqual:volName]) {
+                DALogInfo("%@: got 2 different names from probe and userfs: p->%@  u->%@", deviceName, volumeName, volName);
+                if ([volName isEqual:@"Untitled"]) {
+                    volName = volumeName;
+                }
+            }
+
             mountFlags |= [volumeInfo[@"how"] intValue];
 
             if ( volumeInfo[@"errorForDomain"] )
@@ -144,9 +165,16 @@ int __DAMountUserFSVolume( void * parameter )
             if ( err )
             {
                 DALogError("%@ mount failed with %@", deviceName, err);
-                goto exit;
+
+                NSError *unloadError = [userFSManager forgetVolume:UUID withFlags:0];
+                if ( unloadError )
+                {
+                    DALogError("unload for volume %@ failed with %@", volName, unloadError);
+                }
+            } else
+            {
+                DALogInfo("Mounted %@ successfully.", UUID);
             }
-            DALogInfo("Mounted %@ successfully.", UUID);
         }
 #endif
     }
@@ -157,10 +185,48 @@ exit:
     {
         returnValue = (int)err.code;
     }
-    [userFSManager release];
-    [mountClient release];
     
     return returnValue;
 }
 
+int DAUserFSOpen( char *path, int flags )
+{
+    int fd = -1;
+
+
+    xpc_connection_t server = xpc_connection_create_mach_service( "com.apple.filesystems.userfs_helper", NULL, 0 );
+    assert( server != NULL );
+    assert( xpc_get_type(server) == XPC_TYPE_CONNECTION );
+    xpc_connection_set_event_handler( server, ^(xpc_object_t object) { /* do nothing */ } );
+    xpc_connection_resume( server );
+
+    xpc_object_t msg = xpc_dictionary_create( NULL, NULL, 0 );
+    xpc_dictionary_set_string( msg, "path", path );
+    xpc_dictionary_set_int64 (msg, "flags", flags );
+
+    xpc_object_t reply = xpc_connection_send_message_with_reply_sync( server, msg );
+    if ( reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY )
+    {
+        fd = xpc_dictionary_dup_fd( reply, "fd" );
+        if ( fd < 0 )
+        {
+            int64_t error = xpc_dictionary_get_int64( reply, "error" );
+            DALogInfo( "open:error:%d", (int)error );
+            if ( error == 0 )
+            {
+                error = EIO;
+            }
+            errno = (int)error;
+        }
+    }
+    else
+    {
+        DALogInfo( "open:invalidReply:%{public}s", reply ? xpc_copy_description(reply) : "NULL" );
+        errno = EIO;
+    }
+    
+    xpc_connection_cancel( server );
+
+    return fd;
+}
 #endif

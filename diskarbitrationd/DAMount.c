@@ -47,6 +47,8 @@ struct __DAMountCallbackContext
     CFURLRef        mountpoint;
     CFStringRef     options;
     CFURLRef        devicePath;
+    DADiskRef       contDisk;
+    int             fd;
 };
 
 typedef struct __DAMountCallbackContext __DAMountCallbackContext;
@@ -102,7 +104,18 @@ static void __DAMountWithArgumentsCallbackStage1( int status, void * parameter )
 
         context->assertionID = kIOPMNullAssertionID;
     }
-
+#if TARGET_OS_IOS
+    if ( context->contDisk )
+    {
+        DAUnitSetState( context->contDisk, kDAUnitStateCommandActive, FALSE );
+        CFRelease( context->contDisk );
+        context->contDisk = NULL;
+    }
+    if ( context->fd != -1)
+    {
+        close( context->fd );
+    }
+#endif
     if ( status )
     {
         /*
@@ -167,14 +180,22 @@ static void __DAMountWithArgumentsCallbackStage1( int status, void * parameter )
 #endif
         {
             DALogInfo( "mounted disk, id = %@, ongoing.", context->disk );
-            
+            CFStringRef preferredMountMethod = NULL;
+#if TARGET_OS_OSX
+            preferredMountMethod = CFDictionaryGetValue( gDAPreferenceList, kDAPreferenceMountMethodkey );
+#else
+            if ( true == DAMountGetPreference( context->disk, kDAMountPreferenceEnableUserFSMount ) )
+            {
+                preferredMountMethod = CFSTR("UserFS");
+            }
+#endif
             DAFileSystemMountWithArguments( DADiskGetFileSystem( context->disk ),
                                             context->devicePath,
                                             DADiskGetDescription( context->disk, kDADiskDescriptionVolumeNameKey ),
                                             context->mountpoint,
                                             DADiskGetUserUID( context->disk ),
                                             DADiskGetUserGID( context->disk ),
-                                            DAMountGetPreference( context->disk, kDAMountPreferenceEnableUserFSMount ),
+                                            preferredMountMethod,
                                             __DAMountWithArgumentsCallbackStage2,
                                             context,
                                             context->options,
@@ -468,7 +489,21 @@ CFURLRef DAMountCreateMountPointWithAction( DADiskRef disk, DAMountPointAction a
                     /*
                      * Create the mount point.
                      */
+///w:start
+                    struct statfs fs     = { 0 };
+                    int status = statfs( path, &fs );
 
+                    if (status == 0 && strncmp( fs.f_mntonname, kDAMainDataVolumeMountPointFolder, strlen( kDAMainDataVolumeMountPointFolder ) ) == 0 )
+                    {
+                        mountpoint = CFURLCreateFromFileSystemRepresentation( kCFAllocatorDefault, ( void * ) path, strlen( path ), TRUE );
+                        if ( mountpoint )
+                        {
+                            DAMountRemoveMountPoint( mountpoint );
+                            CFRelease ( mountpoint );
+                            mountpoint = NULL;
+                        }
+                    }
+///w:stop
                     if ( mkdir( path, 0111 ) == 0 )
                     {
                         if ( DADiskGetUserUID( disk ) )
@@ -622,60 +657,7 @@ Boolean DAMountGetPreference( DADiskRef disk, DAMountPreference preference )
             /*
              * Determine whether the media is removable.
              */
-#if TARGET_OS_OSX
-            if ( DADiskGetDescription( disk, kDADiskDescriptionMediaRemovableKey ) == kCFBooleanTrue )
-            {
-                value = CFDictionaryGetValue( gDAPreferenceList, kDAPreferenceEnableUserFSMountRemovableKey );
-
-                value = value ? value : kCFBooleanTrue;
-            }
-            else
-            {
-                /*
-                 * Determine whether the device is internal.
-                 */
-
-                if ( DADiskGetDescription( disk, kDADiskDescriptionDeviceInternalKey ) == kCFBooleanTrue )
-                {
-                    value = CFDictionaryGetValue( gDAPreferenceList, kDAPreferenceEnableUserFSMountInternalKey );
-
-                    value = value ? value : kCFBooleanFalse;
-                }
-                else
-                {
-                    value = CFDictionaryGetValue( gDAPreferenceList, kDAPreferenceEnableUserFSMountExternalKey );
-
-                    value = value ? value : kCFBooleanTrue;
-                }
-            }
-            
-            if ( value == kCFBooleanTrue )
-            {
-                CFArrayRef filesystemsArray = CFDictionaryGetValue( gDAPreferenceList, kDAPreferenceFileSystemDisableUserFSKey );
-                DAFileSystemRef filesystem = DADiskGetFileSystem( disk );
-                CFIndex    argumentListCount;
-                CFIndex    argumentListIndex;
-                
-                if ( filesystemsArray )
-                {
-                    argumentListCount = CFArrayGetCount( filesystemsArray );
-
-                    for ( argumentListIndex = 0; argumentListIndex < argumentListCount; argumentListIndex++ )
-                    {
-                        CFStringRef compare;
-
-                        compare = CFArrayGetValueAtIndex( filesystemsArray, argumentListIndex );
-
-                        if ( CFEqual( compare, DAFileSystemGetKind( filesystem ) ) == TRUE )
-                        {
-                            value = kCFBooleanFalse;
-                            break;
-                        }
-                    }
-                }
-            }
-            
-#elif TARGET_OS_IOS
+#if TARGET_OS_IOS
             if ( DADiskGetDescription( disk, kDADiskDescriptionDeviceInternalKey ) == kCFBooleanFalse )
             {
                 value = CFDictionaryGetValue( gDAPreferenceList, kDAPreferenceEnableUserFSMountExternalKey );
@@ -774,7 +756,11 @@ void DAMountRemoveMountPoint( CFURLRef mountpoint )
                  * Remove the mount point.
                  */
 
-                rmdir( path );
+                int status = rmdir( path );
+                if (status != 0)
+                {
+                    DALogInfo( "rmdir failed to remove path %s with status %d.", path, errno );
+                }
             }
         }
     }
@@ -1345,10 +1331,44 @@ void DAMountWithArguments( DADiskRef disk, CFURLRef mountpoint, DAMountCallback 
     context->mountpoint      = mountpoint;
     context->options         = options;
     context->devicePath      = devicePath;
-
+    context->contDisk        = NULL;
+    context->fd              = -1;
     
     if ( check == kCFBooleanTrue )
     {
+#if TARGET_OS_IOS
+        context->contDisk = DADiskGetContainerDisk( disk );
+        if ( context->contDisk )
+        {
+            int fd = DAUserFSOpen( DADiskGetBSDPath( context->contDisk, TRUE ), O_RDWR );
+            if ( fd == -1 )
+            {
+                status = errno;
+                
+                goto DAMountWithArgumentsErr;
+                
+            }
+            DAUnitSetState( context->contDisk, kDAUnitStateCommandActive, TRUE );
+            CFRetain( context->contDisk );
+            int newfd = dup (fd );
+            close (fd);
+            context->fd = newfd;
+        }
+        else
+        {
+            int fd = DAUserFSOpen(DADiskGetBSDPath( disk, TRUE), O_RDWR);
+            if ( fd == -1 )
+            {
+                status = errno;
+                
+                goto DAMountWithArgumentsErr;
+                
+            }
+            int newfd = dup (fd );
+            close (fd);
+            context->fd = newfd;
+        }
+#endif
         DALogInfo( "repaired disk, id = %@, ongoing.", disk );
 
         IOPMAssertionCreateWithDescription( kIOPMAssertionTypePreventUserIdleSystemSleep,
@@ -1361,7 +1381,8 @@ void DAMountWithArguments( DADiskRef disk, CFURLRef mountpoint, DAMountCallback 
                                             &context->assertionID );
 
         DAFileSystemRepair( DADiskGetFileSystem( disk ),
-                            DADiskGetDevice( disk ),
+                           (context->contDisk)? DADiskGetDevice( context->contDisk ):DADiskGetDevice( disk ),
+                            context->fd,
                             __DAMountWithArgumentsCallbackStage1,
                             context );
     }

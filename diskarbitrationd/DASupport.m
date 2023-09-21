@@ -43,6 +43,14 @@
 #include <IOKit/storage/IOMedia.h>
 #include <IOKit/storage/IOStorageProtocolCharacteristics.h>
 #include <SystemConfiguration/SystemConfiguration.h>
+#include <os/feature_private.h>
+
+#ifdef DA_FSKIT
+#include <FSKit/FSKit_private.h>
+#endif
+#if TARGET_OS_OSX
+#include <FSPrivate.h>
+#endif
 
 #if TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_WATCH || TARGET_OS_BRIDGE
 #include <Security/Security.h>
@@ -65,6 +73,80 @@ struct __DAAuthorizeWithCallbackContext
 typedef struct __DAAuthorizeWithCallbackContext __DAAuthorizeWithCallbackContext;
 
 static pthread_mutex_t __gDAAuthorizeWithCallbackLock = PTHREAD_MUTEX_INITIALIZER;
+
+#ifdef DA_FSKIT
+struct __FSDAModuleContext
+{
+    CFArrayRef properties;
+};
+
+struct __FSDAProbeContext {
+    CFStringRef               deviceName;
+    CFStringRef               bundleID;
+    bool                      doFsck;
+    int                       checkStatus;
+    CFStringRef               volName;
+    CFStringRef               volType;
+    CFUUIDRef                 volUUID;
+    DAFileSystemProbeCallback callback;
+    void                      *callbackContext;
+};
+
+struct __FSDARepairContext {
+    CFStringRef               deviceName;
+    CFStringRef               bundleID;
+    DAFileSystemCallback      callback;
+    void                      *callbackContext;
+};
+
+typedef struct __FSDAModuleContext __FSDAModuleContext;
+typedef struct __FSDAProbeContext __FSDAProbeContext;
+typedef struct __FSDARepairContext __FSDARepairContext;
+
+int __DAProbeWithFSKit( void *parameter );
+int __DARepairWithFSKit( void *parameter );
+int __DAFileSystemGetModulesSync( void *parameter );
+void __DAFSKitProbeCallback( int status , void *parameter );
+void __DAFSKitRepairCallback( int status , void *parameter );
+void __DAFileSystemGetModulesCallback( int status , void *parameter );
+
+@interface FSDATaskMessage : NSObject <FSTaskMessageOps>
+@property (retain) dispatch_group_t dispatch_group;
+@end
+
+@implementation FSDATaskMessage
+
+- (void)logMessage:( NSString * )str
+{
+    DALogInfo( "%s\n" , [str UTF8String] );
+}
+- (void)prompt:( NSString * )prompt
+         reply:( void (^)( NSString * _Nullable , NSError* _Nullable ) )reply
+{
+    DALogInfo( "%s\n" , [prompt UTF8String] );
+    reply( @"Completed prompt" , nil );
+}
+
+- (void)promptTrueFalse:( NSString * )prompt
+                  reply:( void (^)( BOOL , NSError* _Nullable ) )reply {
+    DALogInfo( "%s\n", [prompt UTF8String] );
+    reply( true , nil );
+}
+
+- (void)completed:( NSError* _Nullable )error
+            reply:( void (^)( int ignore_me , NSError * _Nullable ))reply
+{
+    DALogInfo("Completed task with error %@\n" , error );
+    
+    if ( _dispatch_group ) {
+        dispatch_group_leave( _dispatch_group );
+    }
+    
+    reply( 0 , error );
+}
+
+@end
+#endif /* FSKit DA functionality */
 
 #if TARGET_OS_OSX
 int __DAAuthorizeWithCallback( void * parameter )
@@ -365,6 +447,365 @@ static void __DAFileSystemListRefresh( const char * directory )
     }
 }
 
+#ifdef DA_FSKIT
+
+static void __DAFileSystemListRefreshModules()
+{
+    __FSDAModuleContext *context = malloc( sizeof( __FSDAModuleContext ) );
+    
+    if ( context == NULL )
+    {
+        return;
+    }
+    
+    context->properties = NULL;
+    
+    DAThreadExecute( __DAFileSystemGetModulesSync , context , __DAFileSystemGetModulesCallback , context );
+}
+
+void __DAFileSystemGetModulesCallback( int status , void *parameter )
+{
+    __FSDAModuleContext *context = parameter;
+    NSArray<NSDictionary *> *properties = ( __bridge NSArray<NSDictionary *> * ) context->properties;
+    
+    [properties enumerateObjectsUsingBlock:^(NSDictionary * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        DAFileSystemRef filesystem;
+        
+        /*
+         * Create a file system object for this file system.
+         */
+        
+        filesystem = DAFileSystemCreateFromProperties( kCFAllocatorDefault, (__bridge CFDictionaryRef) obj );
+        
+        if ( filesystem )
+        {
+            CFDictionaryRef probe;
+            
+            /*
+             * Add this file system object to our list.
+             */
+            
+            DALogDebug( " created filesystem, id = %@." , filesystem );
+            
+            CFArrayAppendValue( gDAFileSystemList , filesystem );
+            
+            probe = DAFileSystemGetProbeList( filesystem );
+            
+            if ( probe )
+            {
+                CFDictionaryApplyFunction( probe, __DAFileSystemProbeListAppendValue, filesystem );
+            }
+            
+            CFRelease( filesystem );
+        }
+    }];
+    
+    /*
+     * Order the probe list again after the asynchronous update.
+     */
+
+    CFArraySortValues( gDAFileSystemProbeList ,
+                       CFRangeMake( 0 , CFArrayGetCount( gDAFileSystemProbeList ) ) ,
+                       __DAFileSystemProbeListCompare ,
+                       NULL );
+    
+    if ( context->properties )
+    {
+        CFRelease( context->properties );
+    }
+    
+    free( context );
+}
+
+int __DAFileSystemGetModulesSync( void *parameter )
+{
+    __FSDAModuleContext *context = parameter;
+    NSArray<NSDictionary *> *properties = [FSModuleHost installedExtensionPropertiesSync];
+    
+    context->properties = CFRetain( ( __bridge CFArrayRef ) properties );
+    
+    return 0;
+}
+
+void DAProbeWithFSKit( CFStringRef deviceName ,
+                       CFStringRef bundleID ,
+                       bool doFsck ,
+                       DAFileSystemProbeCallback callback ,
+                       void *callbackContext )
+{
+    __FSDAProbeContext *context = malloc( sizeof( __FSDAProbeContext ) );
+    
+    if ( context == NULL )
+    {
+        callback( ENOMEM , ENOMEM , NULL , NULL , NULL , callbackContext );
+        CFRelease( bundleID );
+        CFRelease( deviceName );
+        return;
+    }
+    
+    context->deviceName = deviceName;
+    context->bundleID = bundleID;
+    context->doFsck = doFsck;
+    context->volName = NULL;
+    context->volType = NULL;
+    context->volUUID = NULL;
+    context->checkStatus = 0;
+    context->callback = callback;
+    context->callbackContext = callbackContext;
+    
+    DAThreadExecute( __DAProbeWithFSKit , context , __DAFSKitProbeCallback , context );
+}
+    
+int __DAProbeWithFSKit( void *parameter )
+{
+    FSClient                  *client;
+    FSBlockDeviceResource     *res;
+    __FSDAProbeContext        *context         = parameter;
+    CFStringRef               deviceName       = context->deviceName;
+    CFStringRef               bundleID         = context->bundleID;
+    bool                      doFsck           = context->doFsck;
+    DAFileSystemProbeCallback callback         = context->callback;
+    void                      *callbackContext = context->callbackContext;
+    __block int               status           = 0;
+    dispatch_group_t          group            = dispatch_group_create();
+    
+    client = [FSClient new];
+    res = [FSBlockDeviceResource newProxyForBSDName:(__bridge NSString *) deviceName];
+    
+    [client probeResourceSync:res usingBundle: (__bridge NSString *) bundleID
+                        reply:^(FSProbeResult * _Nullable result,
+                                NSError * _Nullable probeErr) {
+        NSString                *trimmedName = nil;
+        FSTaskOptionsBundle     *options;
+        FSMessageReceiver       *msgRcvr;
+        FSMessageConnection     *connection;
+        FSTaskOptionsBundle     *taskOptions;
+        FSDATaskMessage         *messageDumper;
+        __block CFStringRef     volumeType = NULL;
+        
+        if ( probeErr )
+        {
+            status = (int) [probeErr code];
+        }
+        else if ( result )
+        {
+            switch ( result.result )
+            {
+                case FSMatchRecognized:
+                    status = EIO;
+                    break;
+                case FSMatchNotRecognized:
+                    status = ENOENT;
+                    break;
+                default:
+                    status = 0;
+            }
+        }
+        
+        if ( status )
+        {
+            context->checkStatus = status;
+            return;
+        }
+        
+#if TARGET_OS_OSX
+        volumeType =
+        _FSCopyNameForVolumeFormatAtNode( ( __bridge CFStringRef ) res.devicePath );
+        if ( volumeType )
+        {
+            context->volType = CFRetain( volumeType );
+        }
+#endif
+        
+        if ( result.name )
+        {
+            /* Handle empty name */
+            if ( ![result.name hasPrefix:@"\0"] )
+            {
+                trimmedName = [result.name stringByTrimmingCharactersInSet:
+                               [NSCharacterSet characterSetWithCharactersInString:@"\0"]];
+            }
+        }
+        
+        if ( trimmedName && [trimmedName length] )
+        {
+            context->volName = CFRetain( ( __bridge CFStringRef ) trimmedName );
+        }
+        else
+        {
+            if ( [(__bridge NSString *) bundleID hasSuffix:@"msdos"] )
+            {
+                context->volName = CFRetain(CFSTR("NO NAME"));
+            }
+            else
+            {
+                context->volName = CFRetain(CFSTR("Untitled"));
+            }
+        }
+        
+        if ( result.containerUUID )
+        {
+            context->volUUID = CFUUIDCreateFromString( kCFAllocatorDefault ,
+                                                      ( __bridge CFStringRef ) [result.containerUUID UUIDString] );
+        }
+        
+        if ( !context->doFsck )
+        {
+            return;
+        }
+        
+        // Pass the connection to FSClient
+        messageDumper   = [FSDATaskMessage new];
+        msgRcvr         = [FSMessageReceiver newWithDelegate:messageDumper];
+        connection      = [msgRcvr getConnection];
+        options         = [FSTaskOptionsBundle new];
+        
+        [options addOption:[FSTaskOption newOptionWithoutValue:@"q"]];
+        
+        dispatch_group_enter(group);
+        messageDumper.dispatch_group = group;
+        
+        [client checkResource:res
+                  usingBundle:(__bridge NSString *) context->bundleID
+                      options:options
+                   connection:connection
+                        reply:^(NSUUID * _Nullable taskID, NSError * _Nullable checkErr) {
+            context->checkStatus = checkErr ? (int) [checkErr code] : 0;
+            
+            if ( checkErr )
+            {
+                dispatch_group_leave( group );
+            }
+        }];
+
+        dispatch_group_wait( group , DISPATCH_TIME_FOREVER );
+    }];
+    
+    return status;
+}
+
+void __DAFSKitProbeCallback( int status , void *parameter )
+{
+    __FSDAProbeContext *context = parameter;
+    
+    if ( context->callback ) {
+        context->callback( status ,
+                           context->checkStatus ,
+                           context->volName ,
+                           context->volType ,
+                           context->volUUID ,
+                           context->callbackContext );
+    }
+    
+    CFRelease( context->bundleID );
+    CFRelease( context->deviceName );
+    
+    if ( context->volName )
+    {
+        CFRelease( context->volName );
+    }
+    
+    if ( context->volType )
+    {
+        CFRelease( context->volType );
+    }
+    
+    if ( context->volUUID )
+    {
+        CFRelease( context->volUUID );
+    }
+    
+    free( parameter );
+}
+
+void DARepairWithFSKit( CFStringRef deviceName ,
+                        CFStringRef bundleID ,
+                        DAFileSystemCallback callback ,
+                        void *callbackContext )
+{
+    __FSDARepairContext *context = malloc( sizeof( __FSDARepairContext ) );
+    
+    if ( context == NULL )
+    {
+        callback( ENOMEM , callbackContext );
+        CFRelease( bundleID );
+        CFRelease( deviceName );
+        return;
+    }
+    
+    context->deviceName = deviceName;
+    context->bundleID = bundleID;
+    context->callback = callback;
+    context->callbackContext = callbackContext;
+    
+    DAThreadExecute( __DARepairWithFSKit , context , __DAFSKitRepairCallback , context );
+}
+
+void __DAFSKitRepairCallback( int status , void *parameter )
+{
+    __FSDARepairContext *context = parameter;
+    
+    if ( context->callback ) {
+        context->callback( status ,
+                           context->callbackContext );
+    }
+    
+    CFRelease( context->bundleID );
+    CFRelease( context->deviceName );
+    
+    free( parameter );
+}
+
+int __DARepairWithFSKit( void *parameter )
+{
+    FSClient *client;
+    FSBlockDeviceResource *res;
+    __FSDARepairContext     *context         = parameter;
+    CFStringRef             deviceName       = context->deviceName;
+    CFStringRef             bundleID         = context->bundleID;
+    DAFileSystemCallback    callback         = context->callback;
+    void                    *callbackContext = context->callbackContext;
+    FSTaskOptionsBundle     *options;
+    FSMessageReceiver       *msgRcvr;
+    FSMessageConnection     *connection;
+    FSTaskOptionsBundle     *taskOptions;
+    FSDATaskMessage         *messageDumper;
+    __block int             status           = 0;
+    dispatch_group_t        group            = dispatch_group_create();
+            
+    client = [FSClient new];
+    res = [FSBlockDeviceResource newProxyForBSDName:(__bridge NSString *) deviceName
+                                           writable:YES];
+    
+    // Pass the connection to FSClient
+    messageDumper   = [FSDATaskMessage new];
+    msgRcvr         = [FSMessageReceiver newWithDelegate:messageDumper];
+    connection      = [msgRcvr getConnection];
+    options         = [FSTaskOptionsBundle new];
+    
+    [options addOption:[FSTaskOption newOptionWithoutValue:@"y"]];
+
+    dispatch_group_enter( group );
+    messageDumper.dispatch_group = group;
+    
+    [client checkResource:res
+              usingBundle:(__bridge NSString *) bundleID
+                  options:options
+               connection:connection
+                    reply:^(NSUUID * _Nullable taskID, NSError * _Nullable checkErr) {
+        if ( checkErr )
+        {
+            status = (int) [checkErr code];
+            dispatch_group_leave( group );
+        }
+    }];
+    
+    dispatch_group_wait( group , DISPATCH_TIME_FOREVER );
+    return status;
+}
+
+#endif /* DA_FSKIT */
+
 void DAFileSystemListRefresh( void )
 {
     struct stat status1;
@@ -409,6 +850,16 @@ void DAFileSystemListRefresh( void )
 
         __DAFileSystemListRefresh( FS_DIR_LOCATION );
         __DAFileSystemListRefresh( ___FS_DEFAULT_DIR );
+
+#ifdef DA_FSKIT
+        /*
+         * Only add the FSModules if we have the preference for it.
+         */
+        if ( os_feature_enabled(DiskArbitration, enableFSKitModules) )
+        {
+            __DAFileSystemListRefreshModules();
+        }
+#endif
 
         /*
          * Order the probe list.
@@ -730,7 +1181,7 @@ const CFStringRef kDAPreferenceAutoMountDisableKey                = CFSTR( "DAAu
 const CFStringRef kDAPreferenceEnableUserFSMountExternalKey       = CFSTR( "DAEnableUserFSMountExternal" );
 const CFStringRef kDAPreferenceEnableUserFSMountInternalKey       = CFSTR( "DAEnableUserFSMountInternal" );
 const CFStringRef kDAPreferenceEnableUserFSMountRemovableKey      = CFSTR( "DAEnableUserFSMountRemovable" );
-const CFStringRef kDAPreferenceFileSystemDisableUserFSKey         = CFSTR( "DAFileSystemDisableUserFS" );
+const CFStringRef kDAPreferenceMountMethodkey                     = CFSTR( "DAMountMethod" );
 const CFStringRef kDAPreferenceDisableEjectNotificationKey        = CFSTR( "DADisableEjectNotification" );
 const CFStringRef kDAPreferenceDisableUnreadableNotificationKey   = CFSTR( "DADisableUnreadableNotification" );
 const CFStringRef kDAPreferenceDisableUnrepairableNotificationKey = CFSTR( "DADisableUnrepairableNotification" );
@@ -908,13 +1359,13 @@ void DAPreferenceListRefresh( void )
                 }
             }
             
-            value = SCPreferencesGetValue( preferences, kDAPreferenceFileSystemDisableUserFSKey );
+            value = SCPreferencesGetValue( preferences, kDAPreferenceMountMethodkey );
 
             if ( value )
             {
-                if ( CFGetTypeID( value ) == CFArrayGetTypeID( ) )
+                if ( CFGetTypeID( value ) == CFStringGetTypeID( ) )
                 {
-                    CFDictionarySetValue( gDAPreferenceList, kDAPreferenceFileSystemDisableUserFSKey, value );
+                    CFDictionarySetValue( gDAPreferenceList, kDAPreferenceMountMethodkey, value );
                 }
             }
             
@@ -947,6 +1398,7 @@ void DAPreferenceListRefresh( void )
                     CFDictionarySetValue( gDAPreferenceList, kDAPreferenceDisableUnrepairableNotificationKey, value );
                 }
             }
+            
             CFRelease( preferences );
         }
     }

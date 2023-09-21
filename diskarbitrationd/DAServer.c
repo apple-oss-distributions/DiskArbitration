@@ -37,6 +37,7 @@
 #include "DASession.h"
 #include "DAStage.h"
 #include "DASupport.h"
+#include "DAThread.h"
 
 #include <paths.h>
 #include <bsm/libbsm.h>
@@ -46,6 +47,8 @@
 #include <IOKit/IOMessage.h>
 #include <IOKit/storage/IOMedia.h>
 #include <os/log.h>
+#include <MediaKit/GPTTypes.h>
+#include <IOKit/IOBSD.h>
 ///w:start
 #include <dlfcn.h>
 #if TARGET_OS_OSX
@@ -105,7 +108,7 @@ static mach_msg_header_t * __gDAServerReply = NULL;
 static void __DAMediaBusyStateChangedCallback( void * context, io_service_t service, void * argument );
 static void __DAMediaPropertyChangedCallback( void * context, io_service_t service, void * argument );
 
-static DADiskRef __DADiskListGetDisk( const char * diskID )
+DADiskRef DADiskListGetDisk( const char * diskID )
 {
     CFIndex count;
     CFIndex index;
@@ -149,6 +152,62 @@ static DADiskRef __DADiskListGetDiskWithIOMedia( io_service_t media )
     return NULL;
 }
 
+static void DADiskSetContainer( DADiskRef disk )
+{
+    if ( disk )
+    {
+        io_service_t media;
+        io_service_t parent = IO_OBJECT_NULL;
+        media = DADiskGetIOMedia( disk );
+        IORegistryEntryGetParentEntry( media, kIOServicePlane, &parent );
+        media = parent;
+        
+        while ( media )
+        {
+            if ( IOObjectConformsTo( media, kIOMediaClass ) )
+            {
+                CFTypeRef content;
+
+                content = IORegistryEntryCreateCFProperty( media, CFSTR( kIOBSDUnitKey ), CFGetAllocator( disk ), 0 );
+
+                if ( content )
+                {
+                    UInt32 bsdUnit;
+                    CFNumberGetValue( content, kCFNumberSInt32Type, &bsdUnit );
+                    if ( bsdUnit != DADiskGetBSDUnit( disk ) )
+                    {
+                        CFTypeRef object = IORegistryEntryCreateCFProperty( media, CFSTR( kIOBSDNameKey ), CFGetAllocator( disk ), 0 );
+
+                        io_name_t name;
+                        char path[PATH_MAX];
+
+                        CFStringGetCString( object, name, sizeof( name ), kCFStringEncodingUTF8 );
+                        strlcpy( path, _PATH_DEV, sizeof( path ) );
+                        strlcat( path, name,      sizeof( path ) );
+                       
+                        DADiskSetContainerId(disk, path);
+                        
+                        IOObjectRelease( media );
+                        CFRelease( content );
+
+                        return ;
+                    }
+
+                    CFRelease( content );
+                }
+            }
+
+            IORegistryEntryGetParentEntry( media, kIOServicePlane, &parent );
+
+            IOObjectRelease( media );
+
+            media = parent;
+            
+            parent = IO_OBJECT_NULL;
+        }
+    }
+
+}
 static void __DAMediaBusyStateChangedCallback( void * context, io_service_t service, void * argument )
 {
     DADiskRef disk;
@@ -410,32 +469,12 @@ static void __DAMediaPropertyChangedCallback( void * context, io_service_t servi
                     CFArrayAppendValue( keys, kDADiskDescriptionMediaWritableKey );
                 }
 
+                __DADiskEncryptionContext *context = malloc( sizeof( __DADiskEncryptionContext ) );
+                if ( context )
                 {
-                    CFBooleanRef encrypted = NULL;
-                    CFNumberRef  encryptionDetail = NULL;
-
-                    _DADiskGetEncryptionStatus( kCFAllocatorDefault, disk, &encrypted, &encryptionDetail );
-
-                    if ( DADiskCompareDescription( disk, kDADiskDescriptionMediaEncryptedKey, encrypted ) )
-                    {
-                        DADiskSetDescription( disk, kDADiskDescriptionMediaEncryptedKey, encrypted );
-
-                        CFArrayAppendValue( keys, kDADiskDescriptionMediaEncryptedKey );
-                    }
-
-#if TARGET_OS_OSX
-                    if ( DADiskCompareDescription( disk, kDADiskDescriptionMediaEncryptionDetailKey, encryptionDetail ) )
-                    {
-                        DADiskSetDescription( disk, kDADiskDescriptionMediaEncryptionDetailKey, encryptionDetail );
-
-                        CFArrayAppendValue( keys, kDADiskDescriptionMediaEncryptionDetailKey );
-                    }
-#endif
-
-                    if ( encryptionDetail )
-                    {
-                        CFRelease ( encryptionDetail );
-                    }
+                    context->disk = disk;
+                    CFRetain(context->disk);
+                    DAThreadExecute( _DADiskGetEncryptionStatus, context, _DADiskEncryptionStatusCallback, context );
                 }
 
                 object = IORegistryEntrySearchCFProperty( service,
@@ -1151,6 +1190,9 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
                 if ( CFEqual( content, CFSTR( "41504653-0000-11AA-AA11-00306543ECAC" ) ) )
                 {
                     DAUnitSetState( disk, _kDAUnitStateHasAPFS, TRUE );
+#if TARGET_OS_IOS
+                    DADiskSetContainer( disk );
+#endif
                 }
                 
                 if ( DAUnitGetState( disk, _kDAUnitStateHasAPFS ) )
@@ -1174,6 +1216,16 @@ void _DAMediaAppearedCallback( void * context, io_iterator_t notification )
                 DAUnitSetState( disk, kDAUnitStateStagedUnreadable, FALSE );
 
                 CFArrayInsertValueAtIndex( gDADiskList, 0, disk );
+                
+                {
+                    __DADiskEncryptionContext *context = malloc( sizeof( __DADiskEncryptionContext ) );
+                    if ( context )
+                    {
+                        context->disk = disk;
+                        CFRetain(context->disk);
+                        DAThreadExecute( _DADiskGetEncryptionStatus, context, _DADiskEncryptionStatusCallback, context );
+                    }
+                }
                 
 #if !TARGET_OS_OSX
                 if ( ( DADiskGetDescription( disk, kDADiskDescriptionDeviceInternalKey ) == kCFBooleanFalse)  ||
@@ -1625,7 +1677,7 @@ kern_return_t _DAServerDiskCopyDescription( mach_port_t _session, caddr_t _disk,
 
             DALogDebugHeader( "%@ -> %s", session, gDAProcessNameID );
 
-            disk = __DADiskListGetDisk( _disk );
+            disk = DADiskListGetDisk( _disk );
 
             if ( disk )
             {
@@ -1676,7 +1728,7 @@ kern_return_t _DAServerDiskGetOptions( mach_port_t _session, caddr_t _disk, int3
 
             DALogDebugHeader( "%@ -> %s", session, gDAProcessNameID );
 
-            disk = __DADiskListGetDisk( _disk );
+            disk = DADiskListGetDisk( _disk );
 
             if ( disk )
             {
@@ -1713,7 +1765,7 @@ kern_return_t _DAServerDiskGetUserUID( mach_port_t _session, caddr_t _disk, uid_
         {
             DADiskRef disk;
 
-            disk = __DADiskListGetDisk( _disk );
+            disk = DADiskListGetDisk( _disk );
 
             if ( disk )
             {
@@ -1747,7 +1799,7 @@ kern_return_t _DAServerDiskIsClaimed( mach_port_t _session, caddr_t _disk, boole
 
             DALogDebugHeader( "%@ -> %s", session, gDAProcessNameID );
 
-            disk = __DADiskListGetDisk( _disk );
+            disk = DADiskListGetDisk( _disk );
 
             if ( disk )
             {
@@ -1788,7 +1840,7 @@ kern_return_t _DAServerDiskSetAdoption( mach_port_t _session, caddr_t _disk, boo
 
             DALogDebugHeader( "%@ -> %s", session, gDAProcessNameID );
 
-            disk = __DADiskListGetDisk( _disk );
+            disk = DADiskListGetDisk( _disk );
 
             if ( disk )
             {
@@ -1832,7 +1884,7 @@ kern_return_t _DAServerDiskSetEncoding( mach_port_t _session, caddr_t _disk, int
 
             DALogDebugHeader( "%@ -> %s", session, gDAProcessNameID );
 
-            disk = __DADiskListGetDisk( _disk );
+            disk = DADiskListGetDisk( _disk );
 
             if ( disk )
             {
@@ -1876,7 +1928,7 @@ kern_return_t _DAServerDiskSetOptions( mach_port_t _session, caddr_t _disk, int3
 
             DALogDebugHeader( "%@ -> %s", session, gDAProcessNameID );
 
-            disk = __DADiskListGetDisk( _disk );
+            disk = DADiskListGetDisk( _disk );
 
             if ( disk )
             {
@@ -1917,7 +1969,7 @@ kern_return_t _DAServerDiskUnclaim( mach_port_t _session, caddr_t _disk )
 
             DALogDebugHeader( "%@ -> %s", session, gDAProcessNameID );
 
-            disk = __DADiskListGetDisk( _disk );
+            disk = DADiskListGetDisk( _disk );
 
             if ( disk )
             {
@@ -2110,7 +2162,7 @@ kern_return_t _DAServerSessionQueueRequest( mach_port_t            _session,
 
             DALogDebugHeader( "%@ -> %s", session, gDAProcessNameID );
 
-            disk = __DADiskListGetDisk( _argument0 );
+            disk = DADiskListGetDisk( _argument0 );
 
             if ( disk )
             {
@@ -2527,16 +2579,13 @@ kern_return_t _DAServerSessionRelease( mach_port_t _session )
 
             DASessionSetState( session, kDASessionStateZombie, TRUE );
 
-#if !TARGET_OS_OSX
+
             if ( DASessionGetKeepAlive( session ) == false )
             {
                 ___os_transaction_end( );
 
                 __DASetIdleTimer();
             }
-#else
-            ___os_transaction_end( );
-#endif
 
             ___CFArrayRemoveValue( gDASessionList, session );
             
@@ -2780,7 +2829,7 @@ void _DAVolumeMountedCallback(  )
         {
             DADiskRef disk;
             
-            disk = __DADiskListGetDisk( _DAVolumeGetID( mountList + mountListIndex ) );
+            disk = DADiskListGetDisk( _DAVolumeGetID( mountList + mountListIndex ) );
 
             if ( disk )
             {
@@ -2819,7 +2868,7 @@ void _DAVolumeMountedCallback(  )
                                     char *endStr = strrchr( mountList[mountListIndex].f_mntfromname, '@' ) + 1;
                                     if ( endStr && ( strncmp( endStr, _PATH_DEV "disk", strlen( _PATH_DEV "disk" ) ) == 0 ) )
                                     {
-                                        DADiskRef liveDisk = __DADiskListGetDisk( endStr );
+                                        DADiskRef liveDisk = DADiskListGetDisk( endStr );
                                         
                                         if ( liveDisk && ( DADiskGetState( liveDisk, _kDADiskStateMountAutomaticNoDefer ) == FALSE ) )
                                         {

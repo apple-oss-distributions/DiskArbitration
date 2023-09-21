@@ -50,7 +50,7 @@ extern const CFStringRef kDAFileSystemUnmountArgumentForce;
 
 typedef void ( *DAFileSystemCallback )( int status, void * context );
 
-typedef void ( *DAFileSystemProbeCallback )( int status, CFBooleanRef clean, CFStringRef name, CFStringRef type, CFUUIDRef uuid, void * context );
+typedef void ( *DAFileSystemProbeCallback )( int status, int clean, CFStringRef name, CFStringRef type, CFUUIDRef uuid, void * context );
 
 extern CFStringRef _DAFileSystemCopyNameAndUUID( DAFileSystemRef filesystem, CFURLRef mountpoint, uuid_t *volumeUUID);
 
@@ -58,11 +58,15 @@ extern CFUUIDRef _DAFileSystemCreateUUIDFromString( CFAllocatorRef allocator, CF
 
 extern DAFileSystemRef DAFileSystemCreate( CFAllocatorRef allocator, CFURLRef path );
 
+extern DAFileSystemRef DAFileSystemCreateFromProperties( CFAllocatorRef allocator, CFDictionaryRef properties );
+
 extern dispatch_mach_t DAFileSystemCreateMachChannel( void );
 
 extern CFStringRef DAFileSystemGetKind( DAFileSystemRef filesystem );
 
 extern CFDictionaryRef DAFileSystemGetProbeList( DAFileSystemRef filesystem );
+
+extern CFBooleanRef DAFileSystemIsFSModule( DAFileSystemRef filesystem );
 
 extern CFTypeID DAFileSystemGetTypeID( void );
 
@@ -76,7 +80,7 @@ extern void DAFileSystemMount( DAFileSystemRef      filesystem,
                                gid_t                userGID,
                                DAFileSystemCallback callback,
                                void *               callbackContext,
-                               Boolean              userFSPreferenceEnabled );
+                               CFStringRef          preferredMountMethod  );
 
 extern void DAFileSystemMountWithArguments( DAFileSystemRef      filesystem,
                                             CFURLRef             device,
@@ -84,13 +88,15 @@ extern void DAFileSystemMountWithArguments( DAFileSystemRef      filesystem,
                                             CFURLRef             mountpoint,
                                             uid_t                userUID,
                                             gid_t                userGID,
-                                            Boolean              userFSPreferenceEnabled,
+                                            CFStringRef          preferredMountMethod,
                                             DAFileSystemCallback callback,
                                             void *               callbackContext,
                                             ... );
 
 extern void DAFileSystemProbe( DAFileSystemRef           filesystem,
                                CFURLRef                  device,
+                               char *                    deviceBSDPath,
+                               char *                    containerBSDPath,
                                DAFileSystemProbeCallback callback,
                                void *                    callbackContext,
                                bool                      doFsck );
@@ -103,6 +109,7 @@ extern void DAFileSystemRename( DAFileSystemRef      filesystem,
 
 extern void DAFileSystemRepair( DAFileSystemRef      filesystem,
                                 CFURLRef             device,
+                                int                  fd,
                                 DAFileSystemCallback callback,
                                 void *               callbackContext );
 
@@ -125,6 +132,7 @@ extern void DAFileSystemUnmountWithArguments( DAFileSystemRef      filesystem,
 #if TARGET_OS_OSX || TARGET_OS_IOS
 extern int __DAMountUserFSVolume( void * parameter );
 extern void __DAMountUserFSVolumeCallback( int status, void * parameter );
+extern int DAUserFSOpen( char *path, int flags );
 #endif
 
 struct __DAFileSystemContext

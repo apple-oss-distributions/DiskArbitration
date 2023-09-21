@@ -42,6 +42,11 @@
 #include <unistd.h>
 #include <sys/disk.h>
 #include <DiskArbitration/DiskArbitration.h>
+#include <DiskArbitration/DiskArbitrationPrivate.h>
+#include <IOKit/IOKitLib.h>
+#include <IOKit/storage/IOMedia.h>
+#include <IOKit/IOBSD.h>
+#include <paths.h>
 
 static void __DARequestClaimCallback( int status, void * context );
 static void __DARequestClaimReleaseCallback( CFTypeRef response, void * context );
@@ -57,6 +62,7 @@ static void __DARequestRenameCallback( int status, void * context );
 static void __DARequestUnmountCallback( int status, void * context );
 static void __DARequestUnmountApprovalCallback( CFTypeRef response, void * context );
 static int  __DARequestUnmountGetProcessID( void * context );
+static int  __DARequestEjectGetProcessID( void * context );
 ///w:start
 static void __DARequestMountAuthorizationCallback( DAReturn status, void * context );
 static int  __DARequestUnmountTickle( void * context );
@@ -384,18 +390,30 @@ static void __DARequestEjectCallback( int status, void * context )
         /*
          * We were unable to eject the disk.
          */
-
+        
         DADissenterRef dissenter;
 
-        DALogInfo( "ejected disk, id = %@, failure.", disk );
+        dissenter = DARequestGetDissenter( request );
 
-        DALogInfo( "unable to eject %@ (status code 0x%08X).", disk, status );
+        if ( dissenter == NULL )
+        {
+            DALogInfo( "ejected disk, id = %@, failure.", disk );
 
-        dissenter = DADissenterCreate( kCFAllocatorDefault, unix_err( status ) );
+            DALogInfo( "unable to eject %@ (status code 0x%08X).", disk, status );
 
-        DARequestSetDissenter( request, dissenter );
+            dissenter = DADissenterCreate( kCFAllocatorDefault, unix_err( status ) );
 
-        CFRelease( dissenter );
+            DARequestSetDissenter( request, dissenter );
+
+            CFRelease( dissenter );
+
+#if TARGET_OS_OSX || TARGET_OS_IOS
+            DAThreadExecute( __DARequestEjectGetProcessID, request, __DARequestEjectCallback, request );
+
+            return;
+#endif
+        }
+
     }
     else
     {
@@ -440,6 +458,7 @@ static int __DARequestEjectEject( void * context )
 
     if ( file == -1 )
     {
+        DALogInfo( "open failed with %d for %@", errno, disk);
         status = errno;
     }
     else
@@ -1078,12 +1097,40 @@ static void __DARequestRenameCallback( int status, void * context )
                 DADiskSetDescription( disk, kDADiskDescriptionVolumeNameKey, name );
 
                 CFArrayAppendValue( keys, kDADiskDescriptionVolumeNameKey );
+                
+                mountpoint = DADiskGetDescription( disk, kDADiskDescriptionVolumePathKey );
+                
+#if TARGET_OS_IOS
+                if ( DADiskGetDescription( disk, kDADiskDescriptionVolumeLifsURLKey ) != NULL )
+                {
+                    struct statfs fs     = { 0 };
+                    char *        path   = NULL;
+                    int           status = 0;
+
+                    path = ___CFURLCopyFileSystemRepresentation( mountpoint );
+                    if ( path )
+                    {
+                        status = ___statfs( path, &fs, MNT_NOWAIT );
+                        if ( status == 0 )
+                        {  
+                            CFStringRef volumeURL = CFStringCreateWithCString( kCFAllocatorDefault, fs.f_mntfromname, kCFStringEncodingUTF8 );
+                            if ( volumeURL )
+                            {
+                                DADiskSetDescription( disk, kDADiskDescriptionVolumeLifsURLKey, volumeURL);
+                                
+                                CFArrayAppendValue( keys, kDADiskDescriptionVolumeLifsURLKey );
+
+                                CFRelease( volumeURL );
+                            }
+                        }
+                        free ( path );
+                    }
+                }
+#endif
 
                 /*
                  * Rename the mount point.
                  */
-
-                mountpoint = DADiskGetDescription( disk, kDADiskDescriptionVolumePathKey );
 
                 if ( CFEqual( CFURLGetString( mountpoint ), CFSTR( "file:///" ) ) )
                 {
@@ -1263,7 +1310,7 @@ static Boolean __DARequestUnmount( DARequestRef request )
         DALogInfo( "unmounted disk, id = %@, ongoing.", disk );
 
         DAThreadExecute( __DARequestUnmountUnmount, request, __DARequestUnmountCallback, request );
-
+        
         return TRUE;
     }
     else
@@ -1309,7 +1356,7 @@ static void __DARequestUnmountCallback( int status, void * context )
          */
         if ( mountListIndex == mountListCount )
         {
-            DALogDebug( " %@ is not mounted. Ignore the umount error", disk);
+            DALogDebug( " %@ is not mounted. Ignore the umount error %d", disk, status);
             status = 0;
             goto handleumount;
         }
@@ -1330,12 +1377,14 @@ static void __DARequestUnmountCallback( int status, void * context )
             dissenter = DADissenterCreate( kCFAllocatorDefault, unix_err( status ) );
 
             DARequestSetDissenter( request, dissenter );
-
-            DAThreadExecute( __DARequestUnmountGetProcessID, request, __DARequestUnmountCallback, request );
-
+            
             CFRelease( dissenter );
 
+#if TARGET_OS_OSX || TARGET_OS_IOS
+            DAThreadExecute( __DARequestUnmountGetProcessID, request, __DARequestUnmountCallback, request );
+
             return;
+#endif
         }
 
         __DARequestDispatchCallback( request, dissenter );
@@ -1429,15 +1478,15 @@ static int __DARequestUnmountUnmount( void * context )
     int          status = EINVAL;
     
     disk = DARequestGetDisk( request );
-
+    
     mountpoint = DADiskGetDescription( disk, kDADiskDescriptionVolumePathKey );
-
+    
     path = ___CFURLCopyFileSystemRepresentation( mountpoint );
     
     if ( path )
     {
         DADiskUnmountOptions options;
-
+        
         options = DARequestGetArgument1( request );
         
         if ( options & kDADiskUnmountOptionForce )
@@ -1464,8 +1513,9 @@ static int __DARequestUnmountUnmount( void * context )
         {
             status = errno;
         }
+        free( path );
     }
-        
+    
     return status;
 }
 
@@ -1500,6 +1550,93 @@ static int  __DARequestUnmountGetProcessID( void * context )
         free( path );
     }
 
+    return -1;
+}
+
+static int  __DARequestEjectGetProcessID( void * context )
+{
+    DADiskRef    disk;
+    CFURLRef     mountpoint;
+    char *       path;
+    DARequestRef request = context;
+    int flags;
+
+    disk = DARequestGetDisk( request );
+
+    path = strdup( DADiskGetBSDPath( disk, TRUE ) );
+
+    if ( path )
+    {
+        pid_t dissenterPID = 0;
+
+        int ret = proc_listpidspath( PROC_ALL_PIDS, 0, path, PROC_LISTPIDSPATH_EXCLUDE_EVTONLY, &dissenterPID, sizeof( dissenterPID ) );
+        
+        free( path );
+
+        if ( dissenterPID )
+        {
+            DADissenterRef dissenter;
+            dissenter = DARequestGetDissenter( request );
+
+            DADissenterSetProcessID( dissenter, dissenterPID );
+        }
+        else
+        {
+            io_service_t media;
+
+            media = DADiskGetIOMedia( disk );
+
+            if ( media )
+            {
+                io_iterator_t services = IO_OBJECT_NULL;
+
+                IORegistryEntryCreateIterator( media, kIOServicePlane, kIORegistryIterateRecursively, &services );
+
+                if ( services )
+                {
+                    io_service_t service;
+
+                    while ( ( service = IOIteratorNext( services ) ) )
+                    {
+                        if ( IOObjectConformsTo( service, kIOMediaClass ) )
+                        {
+                            CFTypeRef object = IORegistryEntryCreateCFProperty( service, CFSTR( kIOBSDNameKey ), CFGetAllocator( disk ), 0 );
+                            if ( object )
+                            {
+                                io_name_t name;
+                                char devicepath[PATH_MAX];
+
+                                CFStringGetCString( object, name, sizeof( name ), kCFStringEncodingUTF8 );
+                                strlcpy( devicepath, _PATH_DEV, sizeof( devicepath ) );
+                                strlcat( devicepath, "r",       sizeof( devicepath ) );
+                                strlcat( devicepath, name,      sizeof( devicepath ) );
+
+                                pid_t dissenterPID = 0;
+
+                                int ret = proc_listpidspath( PROC_ALL_PIDS, 0, devicepath, flags, &dissenterPID, sizeof( dissenterPID ) );
+
+                                if ( dissenterPID )
+                                {
+                                    DADissenterRef dissenter;
+
+                                    dissenter = DARequestGetDissenter( request );
+
+                                    DADissenterSetProcessID( dissenter, dissenterPID );
+                                    CFRelease( object );
+                                    IOObjectRelease( service );
+                                    IOObjectRelease( services );
+                                    return -1;
+                                }
+                                CFRelease( object );
+                            }
+                        }
+                        IOObjectRelease( service );
+                    }
+                    IOObjectRelease( services );
+                }
+            }
+        }
+    }
     return -1;
 }
 ///w:start
