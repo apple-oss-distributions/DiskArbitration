@@ -37,6 +37,7 @@ typedef struct __DAFileSystem * DAFileSystemRef;
 typedef struct __DAFileSystemContext __DAFileSystemContext;
 extern const CFStringRef kDAFileSystemMountArgumentForce;
 extern const CFStringRef kDAFileSystemMountArgumentNoDevice;
+extern const CFStringRef kDAFileSystemMountArgumentDevice;
 extern const CFStringRef kDAFileSystemMountArgumentNoExecute;
 extern const CFStringRef kDAFileSystemMountArgumentNoOwnership;
 extern const CFStringRef kDAFileSystemMountArgumentOwnership;
@@ -47,6 +48,7 @@ extern const CFStringRef kDAFileSystemMountArgumentUnion;
 extern const CFStringRef kDAFileSystemMountArgumentUpdate;
 extern const CFStringRef kDAFileSystemMountArgumentNoBrowse;
 extern const CFStringRef kDAFileSystemMountArgumentSnapshot;
+extern const CFStringRef kDAFileSystemMountArgumentNoFollow;
 
 extern const CFStringRef kDAFileSystemUnmountArgumentForce;
 
@@ -97,8 +99,8 @@ extern void DAFileSystemMountWithArguments( DAFileSystemRef      filesystem,
 
 extern void DAFileSystemProbe( DAFileSystemRef           filesystem,
                                CFURLRef                  device,
-                               char *                    deviceBSDPath,
-                               char *                    containerBSDPath,
+                               const char *              deviceBSDPath,
+                               const char *              containerBSDPath,
                                DAFileSystemProbeCallback callback,
                                void *                    callbackContext,
                                bool                      doFsck );
@@ -135,6 +137,7 @@ extern void DAFileSystemUnmountWithArguments( DAFileSystemRef      filesystem,
 extern int __DAMountUserFSVolume( void * parameter );
 extern void __DAMountUserFSVolumeCallback( int status, void * parameter );
 extern int DAUserFSOpen( char *path, int flags );
+extern CFStringRef DSFSKitGetBundleNameWithoutSuffix( CFStringRef filesystemName );
 #endif
 
 struct __DAFileSystemContext
