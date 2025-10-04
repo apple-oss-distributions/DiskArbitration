@@ -74,7 +74,6 @@ extern void DACheckForFSKit( void );
 extern void DAGetFSModulesForUser( uid_t user ,
                                    void *probeCallbackContext );
 
-extern CFStringRef DAGetFSKitBundleID( CFStringRef filesystemName );
 #endif
 
 extern const CFStringRef kDAMountMapMountAutomaticKey; /* ( CFBoolean ) */
@@ -100,6 +99,7 @@ extern const CFStringRef kDAPreferenceMountMethodkey;                 /* ( CFStr
 extern const CFStringRef kDAPreferenceDisableEjectNotificationKey;   /* ( CFBoolean ) */
 extern const CFStringRef kDAPreferenceDisableUnreadableNotificationKey; /* ( CFBoolean ) */
 extern const CFStringRef kDAPreferenceDisableUnrepairableNotificationKey; /* ( CFBoolean ) */
+extern const CFStringRef kDAPreferenceMountAlwaysRepairKey;               /* ( CFBoolean ) */
 
 extern void DAPreferenceListRefresh( void );
 
@@ -119,6 +119,14 @@ typedef UInt32 DAUnitState;
 extern Boolean DAUnitGetState( DADiskRef disk, DAUnitState state );
 extern Boolean DAUnitGetStateRecursively( DADiskRef disk, DAUnitState state );
 extern void    DAUnitSetState( DADiskRef disk, DAUnitState state, Boolean value );
+
+#if TARGET_OS_IOS
+extern Boolean DADeviceIsUnlocked( void );
+#endif
+Boolean DAAPFSCompareVolumeRole(DADiskRef disk, CFStringRef inRole);
+Boolean DAAPFSNoVolumeRole(DADiskRef disk);
+
+extern CFStringRef DAGetFSTypeWithUUID( DAFileSystemRef filesystem , CFUUIDRef volumeUUID );
 
 #ifdef __cplusplus
 }

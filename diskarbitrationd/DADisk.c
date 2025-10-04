@@ -1486,6 +1486,7 @@ void DADiskSetFskitAdditions( DADiskRef disk, CFDictionaryRef additions )
     if ( count == 0)
     {
         // We didn't have any additions before and we have none now. Ok. We are done.
+        CFRelease( keys );
         return;
     }
 
@@ -1580,4 +1581,10 @@ DADiskRef DADiskGetContainerDisk( DADiskRef disk )
     }
     return NULL;
     
+}
+
+Boolean DADiskIsExternalVolume( DADiskRef disk )
+{
+    /* Only external physical volumes have this property set to kCFBooleanFalse - disk images do not set this field by default */
+    return ( DADiskGetDescription( disk , kDADiskDescriptionDeviceInternalKey ) == kCFBooleanFalse );
 }

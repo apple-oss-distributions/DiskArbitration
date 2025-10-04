@@ -53,6 +53,7 @@
 #include <xpc/private.h>
 #include <os/variant_private.h>
 
+
 static const CFStringRef __kDABundlePath = CFSTR( "/System/Library/Frameworks/DiskArbitration.framework" );
 
 static SCDynamicStoreRef     __gDAConfigurationPort   = NULL;
@@ -74,7 +75,7 @@ CFStringRef            gDAConsoleUser                  = NULL;
 gid_t                  gDAConsoleUserGID               = 0;
 uid_t                  gDAConsoleUserUID               = 0;
 CFArrayRef             gDAConsoleUserList              = NULL;
-CFMutableArrayRef      gDADiskList                     = NULL;
+CFMutableArrayRef      gDADiskList                     = NULL; // Should be accessed only under DAServerWorkLoop()
 Boolean                gDAExit                         = FALSE;
 CFMutableArrayRef      gDAFileSystemList               = NULL;
 CFMutableArrayRef      gDAFileSystemProbeList          = NULL;
@@ -88,6 +89,7 @@ CFMutableArrayRef      gDAMountMapList1                = NULL;
 CFMutableArrayRef      gDAMountMapList2                = NULL;
 CFMutableDictionaryRef gDAPreferenceList               = NULL;
 CFMutableArrayRef      gDAMountPointList               = NULL;
+CFMutableDictionaryRef gDADanglingVolumeList           = NULL;
 pid_t                  gDAProcessID                    = 0;
 char *                 gDAProcessName                  = NULL;
 char *                 gDAProcessNameID                = NULL;
@@ -100,24 +102,9 @@ Boolean                gDAUnlockedState                = FALSE;
 Boolean                gFSKitMissing                   = TRUE; // Cleared when we know FSKit is around
 
 #if __CODECOVERAGE__
-#define __segment_start_sym(_sym, _seg) extern void *_sym __asm("segment$start$" #_seg)
-#define __segment_end_sym(_sym, _seg) extern void *_sym __asm("segment$end$" #_seg)
-#define __section_start_sym(_sym, _seg, _sec) extern void *_sym __asm("section$start$" #_seg "$" #_sec)
-#define __section_end_sym(_sym, _seg, _sec) extern void *_sym __asm("section$end$" #_seg "$" #_sec)
-
-uint64_t __llvm_profile_get_size_for_buffer_internal(const char *DataBegin,
-                                                     const char *DataEnd,
-                                                     const char *CountersBegin,
-                                                     const char *CountersEnd ,
-                                                     const char *NamesBegin,
-                                                     const char *NamesEnd);
-int __llvm_profile_write_buffer_internal(char *Buffer,
-                                         const char *DataBegin,
-                                         const char *DataEnd,
-                                         const char *CountersBegin,
-                                         const char *CountersEnd ,
-                                         const char *NamesBegin,
-                                         const char *NamesEnd);
+uint64_t __llvm_profile_get_size_for_buffer(void);
+int __llvm_profile_write_buffer(char *);
+void __llvm_profile_reset_counters(void);
 
 #define DUMP_PROFILE_DATA_SIGNAL    SIGUSR1
 #define CLEAR_PROFILE_DATA_SIGNAL   SIGUSR2
@@ -259,28 +246,18 @@ static void clear_profile_data(void)
 static void dump_profile_data(void)
 {
     size_t size = 0;
+    
+    size = __llvm_profile_get_size_for_buffer();
 
-    __section_start_sym(sect_prf_data_start, __DATA, __llvm_prf_data);
-    __section_end_sym(sect_prf_data_end, __DATA, __llvm_prf_data);
-    __section_start_sym(sect_prf_cnts_start, __DATA, __llvm_prf_cnts);
-    __section_end_sym(sect_prf_cnts_end, __DATA, __llvm_prf_cnts);
-    __section_start_sym(sect_prf_name_start, __DATA, __llvm_prf_names);
-    __section_end_sym(sect_prf_name_end, __DATA, __llvm_prf_names);
-
-    size = __llvm_profile_get_size_for_buffer_internal((const char *) &sect_prf_data_start, (const char *) &sect_prf_data_end,
-                                                       (const uint64_t *) &sect_prf_cnts_start,            (const uint64_t *) &sect_prf_cnts_end,
-                                                       (const char *) &sect_prf_name_start,                (const char *)&sect_prf_name_end);
     void *outputBuffer = malloc(size);
     if (outputBuffer == NULL) goto exit;
 
     int err = 0;
     memset(outputBuffer, 0x00, size);
 
-    err = __llvm_profile_write_buffer_internal((char *)outputBuffer,
-                                               (const char *) &sect_prf_data_start, (const char *) &sect_prf_data_end,
-                                               (const uint64_t *) &sect_prf_cnts_start,            (const uint64_t *) &sect_prf_cnts_end,
-                                               (const char *) &sect_prf_name_start,                (const char *)&sect_prf_name_end);
-
+    err = __llvm_profile_write_buffer(outputBuffer);
+    
+   
     if (err) goto exit;
 
     int f = open ( "/tmp/diskarb.profraw", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH );
@@ -425,8 +402,9 @@ static void __DAMain( void *__unused context )
      */
 
     gDAMountPointList = CFArrayCreateMutable( kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks );
-
+    gDADanglingVolumeList = CFDictionaryCreateMutable( kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks );
     assert( gDAMountPointList );
+    assert( gDADanglingVolumeList );
 
     /*
      * Create the request list.
@@ -582,7 +560,7 @@ static void __DAMain( void *__unused context )
 #if TARGET_OS_IOS
     if ( os_variant_has_factory_content( "com.apple.diskarbitrationd" ) == false )
     {
-        DARegisterForFirstUnlockNotification();
+        DARegisterForUnlockNotification();
     }
 #endif
     

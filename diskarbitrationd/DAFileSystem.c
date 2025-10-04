@@ -110,23 +110,24 @@ static const CFRuntimeClass __DAFileSystemClass =
 
 static CFTypeID __kDAFileSystemTypeID = _kCFRuntimeNotATypeID;
 
-const CFStringRef kDAFileSystemMountArgumentForce       = CFSTR( "force"    );
-const CFStringRef kDAFileSystemMountArgumentNoDevice    = CFSTR( "nodev"    );
-const CFStringRef kDAFileSystemMountArgumentDevice      = CFSTR( "dev"    );
-const CFStringRef kDAFileSystemMountArgumentNoExecute   = CFSTR( "noexec"   );
-const CFStringRef kDAFileSystemMountArgumentNoOwnership = CFSTR( "noowners" );
-const CFStringRef kDAFileSystemMountArgumentOwnership   = CFSTR( "owners" );
-const CFStringRef kDAFileSystemMountArgumentNoSetUserID = CFSTR( "nosuid"   );
-const CFStringRef kDAFileSystemMountArgumentSetUserID   = CFSTR( "suid"   );
-const CFStringRef kDAFileSystemMountArgumentNoWrite     = CFSTR( "rdonly"   );
-const CFStringRef kDAFileSystemMountArgumentUnion       = CFSTR( "union"    );
-const CFStringRef kDAFileSystemMountArgumentUpdate      = CFSTR( "update"   );
-const CFStringRef kDAFileSystemMountArgumentNoBrowse    = CFSTR( "nobrowse" );
-const CFStringRef kDAFileSystemMountArgumentSnapshot    = CFSTR( "-s=" );
-const CFStringRef kDAFileSystemMountArgumentNoFollow    = CFSTR( "nofollow"   );
+const CFStringRef kDAFileSystemMountArgumentForce        = CFSTR( "force"    );
+const CFStringRef kDAFileSystemMountArgumentNoDevice     = CFSTR( "nodev"    );
+const CFStringRef kDAFileSystemMountArgumentDevice       = CFSTR( "dev"    );
+const CFStringRef kDAFileSystemMountArgumentNoExecute    = CFSTR( "noexec"   );
+const CFStringRef kDAFileSystemMountArgumentNoOwnership  = CFSTR( "noowners" );
+const CFStringRef kDAFileSystemMountArgumentNoPermission = CFSTR( "noperm" );
+const CFStringRef kDAFileSystemMountArgumentOwnership    = CFSTR( "owners" );
+const CFStringRef kDAFileSystemMountArgumentPermission   = CFSTR( "perm" );
+const CFStringRef kDAFileSystemMountArgumentNoSetUserID  = CFSTR( "nosuid"   );
+const CFStringRef kDAFileSystemMountArgumentSetUserID    = CFSTR( "suid"   );
+const CFStringRef kDAFileSystemMountArgumentNoWrite      = CFSTR( "rdonly"   );
+const CFStringRef kDAFileSystemMountArgumentUnion        = CFSTR( "union"    );
+const CFStringRef kDAFileSystemMountArgumentUpdate       = CFSTR( "update"   );
+const CFStringRef kDAFileSystemMountArgumentNoBrowse     = CFSTR( "nobrowse" );
+const CFStringRef kDAFileSystemMountArgumentSnapshot     = CFSTR( "-s=" );
+const CFStringRef kDAFileSystemMountArgumentNoFollow     = CFSTR( "nofollow"   );
 
-
-const CFStringRef kDAFileSystemUnmountArgumentForce     = CFSTR( "force" );
+const CFStringRef kDAFileSystemUnmountArgumentForce      = CFSTR( "force" );
 
 static void __DAFileSystemProbeCallbackStage1( int status, CFDataRef output, void * context );
 static void __DAFileSystemProbeCallbackStage2( int status, CFDataRef output, void * context );
@@ -293,6 +294,7 @@ static void __DAFileSystemProbeCallbackStage1( int status, CFDataRef output, voi
                           ___UID_ROOT,
                           ___GID_WHEEL,
                           context->devicefd,
+                          TRUE,
                           __DAFileSystemProbeCallbackStage2,
                           context,
                           CFSTR( "-k" ),
@@ -361,6 +363,7 @@ static void __DAFileSystemProbeCallbackStage2( int status, CFDataRef output, voi
                               ___UID_ROOT,
                               ___GID_WHEEL,
                               fd,
+                              TRUE,
                               __DAFileSystemProbeCallbackStage3,
                               context,
                               CFSTR( "-q" ),
@@ -375,6 +378,7 @@ static void __DAFileSystemProbeCallbackStage2( int status, CFDataRef output, voi
                           ___UID_ROOT,
                           ___GID_WHEEL,
                           -1,
+                          TRUE,
                           __DAFileSystemProbeCallbackStage3,
                           context,
                           CFSTR( "-q" ),
@@ -571,6 +575,12 @@ CFStringRef DAFileSystemGetKind( DAFileSystemRef filesystem )
     return CFDictionaryGetValue( filesystem->_properties, kCFBundleNameKey );
 }
 
+CFStringRef DAFileSystemCopyFSBundleID( DAFileSystemRef filesystem )
+{
+    return CFRetain( CFDictionaryGetValue( filesystem->_properties, CFSTR( "FSBundleID" ) ) );
+}
+
+
 CFDictionaryRef DAFileSystemGetProbeList( DAFileSystemRef filesystem )
 {
     return CFDictionaryGetValue( filesystem->_properties, CFSTR( kFSMediaTypesKey ) );
@@ -738,6 +748,7 @@ void DAFileSystemMountWithArguments( DAFileSystemRef      filesystem,
                           userUID,
                           userGID,
                          -1,
+                          FALSE,
                           __DAFileSystemCallback,
                           context,
                           CFSTR( "-t" ),
@@ -756,6 +767,7 @@ void DAFileSystemMountWithArguments( DAFileSystemRef      filesystem,
                           userUID,
                           userGID,
                          -1,
+                          FALSE,
                           __DAFileSystemCallback,
                           context,
                           CFSTR( "-t" ),
@@ -823,8 +835,7 @@ void DAFileSystemProbe( DAFileSystemRef           filesystem,
      */
     if ( DAFileSystemIsFSModule( filesystem ) )
     {
-        /* Given a bundle name in the form 'fsname_fskit', convert it to a bundle ID in the form 'com.apple.fskit.fsname' */
-        bundleID = DAGetFSKitBundleID( DAFileSystemGetKind( filesystem ) );
+        bundleID = DAFileSystemCopyFSBundleID( filesystem );
         DAProbeWithFSKit( deviceName , bundleID , doFsck , callback , callbackContext );
         return;
     }
@@ -907,6 +918,7 @@ void DAFileSystemProbe( DAFileSystemRef           filesystem,
                       ___UID_ROOT,
                       ___GID_WHEEL,
                       context->devicefd,
+                      TRUE,
                       __DAFileSystemProbeCallbackStage1,
                       context,
                       CFSTR( "-p" ),
@@ -917,13 +929,15 @@ void DAFileSystemProbe( DAFileSystemRef           filesystem,
 
 DAFileSystemProbeErr:
 
+    if ( fdPathStr     )      CFRelease( fdPathStr );
+
     if ( status )
     {
+        // Ownership of these objects transfered to the context
         if ( deviceName    )  CFRelease( deviceName    );
         if ( devicePath    )  CFRelease( devicePath    );
         if ( probeCommand  )  CFRelease( probeCommand  );
         if ( repairCommand )  CFRelease( repairCommand );
-        if ( fdPathStr     )  CFRelease( fdPathStr );
 
         if ( context )  free( context );
 
@@ -1008,6 +1022,8 @@ void DAFileSystemRepair( DAFileSystemRef      filesystem,
     CFDictionaryRef         personalities = NULL;
     int                     status        = 0;
     CFStringRef             fdPathStr     = NULL;
+    Boolean                 trackProgress = FALSE;
+    CFStringRef             fsKind        = NULL;
 #ifdef DA_FSKIT
     CFStringRef             deviceName    = NULL;
     CFStringRef             bundleID      = NULL;
@@ -1020,7 +1036,7 @@ void DAFileSystemRepair( DAFileSystemRef      filesystem,
     if ( DAFileSystemIsFSModule( filesystem ) )
     {
         deviceName = CFURLCopyLastPathComponent(device);
-        bundleID = DAGetFSKitBundleID( DAFileSystemGetKind( filesystem ) );
+        bundleID = DAFileSystemCopyFSBundleID( filesystem );
         DARepairWithFSKit( deviceName , bundleID , callback , callbackContext );
         return;
     }
@@ -1055,17 +1071,42 @@ void DAFileSystemRepair( DAFileSystemRef      filesystem,
         fdPathStr = CFStringCreateWithFormat( kCFAllocatorDefault, NULL, CFSTR( "/dev/fd/%d" ), fd );
         if ( fdPathStr == NULL )  { status = ENOMEM; goto DAFileSystemRepairErr; }
     }
-
-    DACommandExecute( command,
-                      kDACommandExecuteOptionDefault,
-                      ___UID_ROOT,
-                      ___GID_WHEEL,
-                     fd,
-                      __DAFileSystemCallback,
-                      context,
-                      CFSTR( "-y" ),
-                     (fd != -1)?  fdPathStr: devicePath,
-                      NULL );
+    
+    /* Pass -X to fsck utilities for apfs and hfs to track progress */
+    fsKind = DAFileSystemGetKind( filesystem );
+    if ( fsKind )
+    {
+        trackProgress = CFEqual( fsKind , CFSTR( "hfs" ) ) || CFEqual( fsKind , CFSTR( "apfs" ) );
+    }
+    if ( trackProgress )
+    {
+        DACommandExecute( command,
+                          kDACommandExecuteOptionDefault,
+                          ___UID_ROOT,
+                          ___GID_WHEEL,
+                         fd,
+                          TRUE,
+                          __DAFileSystemCallback,
+                          context,
+                          CFSTR( "-y" ),
+                          CFSTR( "-X" ),
+                         (fd != -1)?  fdPathStr: devicePath,
+                          NULL );
+    }
+    else
+    {
+        DACommandExecute( command,
+                          kDACommandExecuteOptionDefault,
+                          ___UID_ROOT,
+                          ___GID_WHEEL,
+                         fd,
+                          TRUE,
+                          __DAFileSystemCallback,
+                          context,
+                          CFSTR( "-y" ),
+                         (fd != -1)?  fdPathStr: devicePath,
+                          NULL );
+    }
 
 DAFileSystemRepairErr:
 
@@ -1124,6 +1165,7 @@ void DAFileSystemRepairQuotas( DAFileSystemRef      filesystem,
                       ___UID_ROOT,
                       ___GID_WHEEL,
                      -1,
+                      FALSE,
                       __DAFileSystemCallback,
                       context,
                       CFSTR( "-g" ),
@@ -1217,6 +1259,7 @@ void DAFileSystemUnmountWithArguments( DAFileSystemRef      filesystem,
                           ___UID_ROOT,
                           ___GID_WHEEL,
                          -1,
+                          FALSE,
                           __DAFileSystemCallback,
                           context,
                           CFSTR( "-f" ),
@@ -1230,6 +1273,7 @@ void DAFileSystemUnmountWithArguments( DAFileSystemRef      filesystem,
                           ___UID_ROOT,
                           ___GID_WHEEL,
                          -1,
+                          FALSE,
                           __DAFileSystemCallback,
                           context,
                           mountpointPath,

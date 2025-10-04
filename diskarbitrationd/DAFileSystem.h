@@ -35,12 +35,15 @@ extern "C" {
 
 typedef struct __DAFileSystem * DAFileSystemRef;
 typedef struct __DAFileSystemContext __DAFileSystemContext;
+// When adding filesystem argument strings, remember to check for them in DAMountContainsArgument()
 extern const CFStringRef kDAFileSystemMountArgumentForce;
 extern const CFStringRef kDAFileSystemMountArgumentNoDevice;
 extern const CFStringRef kDAFileSystemMountArgumentDevice;
 extern const CFStringRef kDAFileSystemMountArgumentNoExecute;
 extern const CFStringRef kDAFileSystemMountArgumentNoOwnership;
+extern const CFStringRef kDAFileSystemMountArgumentNoPermission;
 extern const CFStringRef kDAFileSystemMountArgumentOwnership;
+extern const CFStringRef kDAFileSystemMountArgumentPermission;
 extern const CFStringRef kDAFileSystemMountArgumentNoSetUserID;
 extern const CFStringRef kDAFileSystemMountArgumentSetUserID;
 extern const CFStringRef kDAFileSystemMountArgumentNoWrite;
@@ -67,6 +70,8 @@ extern DAFileSystemRef DAFileSystemCreateFromProperties( CFAllocatorRef allocato
 extern dispatch_mach_t DAFileSystemCreateMachChannel( void );
 
 extern CFStringRef DAFileSystemGetKind( DAFileSystemRef filesystem );
+
+extern CFStringRef DAFileSystemCopyFSBundleID( DAFileSystemRef filesystem );
 
 extern CFDictionaryRef DAFileSystemGetProbeList( DAFileSystemRef filesystem );
 
@@ -138,6 +143,7 @@ extern void DAFileSystemUnmountWithArguments( DAFileSystemRef      filesystem,
                                              
 #if TARGET_OS_OSX || TARGET_OS_IOS
 extern int __DAMountUserFSVolume( void * parameter );
+extern Boolean __DAMountShouldUseFSKit( CFStringRef fsType , Boolean *isFSModule );
 extern void __DAMountUserFSVolumeCallback( int status, void * parameter );
 extern int DAUserFSOpen( char *path, int flags );
 extern CFStringRef DSFSKitGetBundleNameWithoutSuffix( CFStringRef filesystemName );
